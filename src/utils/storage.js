@@ -1,7 +1,7 @@
 const STORAGE_KEY = 'statement-atlas-profile-v1';
 
 export const createEmptyProfile = () => ({
-  version: 4,
+  version: 5,
   statements: [],
   transactions: [],
   rules: [],
@@ -11,12 +11,16 @@ export const createEmptyProfile = () => ({
 });
 
 export const buildTransactionKey = (transaction) => ([
+  transaction.sourceType || 'bank',
+  transaction.accountType || 'cash',
   transaction.accountLast4 || '0000',
   transaction.date,
   transaction.valueDate,
   transaction.direction,
   Number(transaction.amount || 0).toFixed(2),
-  Number(transaction.balance || 0).toFixed(2),
+  transaction.balance === null || transaction.balance === undefined
+    ? 'na'
+    : Number(transaction.balance || 0).toFixed(2),
   transaction.refNo || '',
   transaction.narration || '',
 ].join('|'));
@@ -89,27 +93,43 @@ const normalizeRule = (rule) => {
 
 const normalizeProfile = (profile) => {
   const next = profile || createEmptyProfile();
-  const statements = [...(next.statements || [])].sort((left, right) => (
-    String(right.toDate || '').localeCompare(String(left.toDate || ''))
-    || String(right.importedAt || '').localeCompare(String(left.importedAt || ''))
-  ));
+  const statements = [...(next.statements || [])]
+    .map((statement) => ({
+      sourceType: 'bank',
+      accountType: 'cash',
+      ...statement,
+      sourceType: statement?.sourceType || (statement?.accountType === 'credit' ? 'creditCard' : 'bank'),
+      accountType: statement?.accountType || (statement?.sourceType === 'creditCard' ? 'credit' : 'cash'),
+    }))
+    .sort((left, right) => (
+      String(right.toDate || '').localeCompare(String(left.toDate || ''))
+      || String(right.importedAt || '').localeCompare(String(left.importedAt || ''))
+    ));
   const transactionKeyMap = new Map();
   const normalizedTransactions = [];
   const transactionIds = new Set();
 
   [...(next.transactions || [])].forEach((transaction) => {
-    const nextKey = buildTransactionKey(transaction);
+    const normalizedTransaction = {
+      sourceType: 'bank',
+      accountType: 'cash',
+      entryKind: transaction?.direction === 'credit' ? 'income' : 'directExpense',
+      ...transaction,
+      sourceType: transaction?.sourceType || (transaction?.accountType === 'credit' ? 'creditCard' : 'bank'),
+      accountType: transaction?.accountType || (transaction?.sourceType === 'creditCard' ? 'credit' : 'cash'),
+      entryKind: transaction?.entryKind || (transaction?.direction === 'credit' ? 'income' : 'directExpense'),
+      balance: transaction?.balance === undefined ? null : transaction.balance,
+    };
+    const nextKey = buildTransactionKey(normalizedTransaction);
     if (transaction.uniqueKey) transactionKeyMap.set(transaction.uniqueKey, nextKey);
     transactionKeyMap.set(nextKey, nextKey);
 
-    const normalizedTransaction = {
-      ...transaction,
-      uniqueKey: nextKey,
-    };
-
     if (transactionIds.has(nextKey)) return;
     transactionIds.add(nextKey);
-    normalizedTransactions.push(normalizedTransaction);
+    normalizedTransactions.push({
+      ...normalizedTransaction,
+      uniqueKey: nextKey,
+    });
   });
 
   const transactions = normalizedTransactions.sort((left, right) => (
@@ -148,7 +168,7 @@ const normalizeProfile = (profile) => {
     .filter(Boolean))];
 
   return {
-    version: 4,
+    version: 5,
     statements,
     transactions,
     rules,
@@ -206,7 +226,7 @@ export const mergeProfiles = (existingProfile, incomingProfile, mode = 'merge') 
   });
 
   return normalizeProfile({
-    version: 4,
+    version: 5,
     statements,
     transactions,
     rules: existing.rules,
@@ -217,7 +237,7 @@ export const mergeProfiles = (existingProfile, incomingProfile, mode = 'merge') 
 };
 
 export const removeStatementFromProfile = (profile, statementId) => normalizeProfile({
-  version: 4,
+  version: 5,
   statements: (profile.statements || []).filter((statement) => statement.id !== statementId),
   transactions: (profile.transactions || []).filter((transaction) => transaction.statementId !== statementId),
   rules: profile.rules,
@@ -244,9 +264,43 @@ export const upsertTransactionOverride = (profile, uniqueKey, patch) => {
   });
 };
 
+export const upsertMultipleTransactionOverrides = (profile, patchMap = {}) => {
+  const overrides = { ...(profile?.overrides || {}) };
+
+  Object.entries(patchMap).forEach(([uniqueKey, patch]) => {
+    const current = overrides[uniqueKey] || null;
+    const nextOverride = normalizeOverride({ ...current, ...patch });
+
+    if (nextOverride) {
+      overrides[uniqueKey] = nextOverride;
+    } else {
+      delete overrides[uniqueKey];
+    }
+  });
+
+  return normalizeProfile({
+    ...(profile || createEmptyProfile()),
+    overrides,
+    lastUpdatedAt: new Date().toISOString(),
+  });
+};
+
 export const clearTransactionOverride = (profile, uniqueKey) => {
   const overrides = { ...(profile?.overrides || {}) };
   delete overrides[uniqueKey];
+
+  return normalizeProfile({
+    ...(profile || createEmptyProfile()),
+    overrides,
+    lastUpdatedAt: new Date().toISOString(),
+  });
+};
+
+export const clearMultipleTransactionOverrides = (profile, uniqueKeys = []) => {
+  const overrides = { ...(profile?.overrides || {}) };
+  uniqueKeys.forEach((uniqueKey) => {
+    delete overrides[uniqueKey];
+  });
 
   return normalizeProfile({
     ...(profile || createEmptyProfile()),

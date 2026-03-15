@@ -2,16 +2,23 @@ import { titleCaseLoose } from './format.js';
 
 const aliasRules = [
   { pattern: /NETFLIX/i, label: 'Netflix' },
-  { pattern: /APPLE\s*MEDIA|APPLESERVI|APPLE SERVICES/i, label: 'Apple Services' },
+  { pattern: /APPLE\s*MEDIA|APPLESERVI|APPLE SERVICES|APPLE\.COM\/BILL/i, label: 'Apple Services' },
   { pattern: /GROWWINVESTTECH|GROWW|BSE\.GROWWPAY/i, label: 'Groww' },
   { pattern: /CRED/i, label: 'Cred' },
   { pattern: /IRCTC/i, label: 'IRCTC' },
   { pattern: /UBER/i, label: 'Uber' },
+  { pattern: /OLA/i, label: 'Ola' },
+  { pattern: /RAPIDO/i, label: 'Rapido' },
   { pattern: /CLEARTRIP/i, label: 'Cleartrip' },
   { pattern: /EASYTRAVELS/i, label: 'EasyTravels' },
   { pattern: /AMAZON\s*PAY|AMAZON INDIA|AMAZON/i, label: 'Amazon' },
   { pattern: /FLIPKART/i, label: 'Flipkart' },
   { pattern: /AJIO/i, label: 'AJIO' },
+  { pattern: /MYNTRA/i, label: 'Myntra' },
+  { pattern: /SWIGGY/i, label: 'Swiggy' },
+  { pattern: /ZOMATO/i, label: 'Zomato' },
+  { pattern: /BIGBASKET/i, label: 'BigBasket' },
+  { pattern: /DMART/i, label: 'DMart' },
   { pattern: /ITC HOTELS/i, label: 'ITC Hotels' },
   { pattern: /TCS/i, label: 'TCS' },
   { pattern: /INFOSYS/i, label: 'Infosys' },
@@ -31,7 +38,27 @@ const aliasRules = [
   { pattern: /CREDIT CARD|AUTOPAY|CC\d/i, label: 'Credit Card AutoPay' },
 ];
 
-const corporateWords = ['limited', 'ltd', 'pvt', 'private', 'bank', 'india', 'services', 'tech', 'finance', 'financial', 'corp', 'hotel', 'hotels', 'pay', 'store', 'mart', 'foods', 'center', 'centre'];
+const corporateWords = [
+  'limited',
+  'ltd',
+  'pvt',
+  'private',
+  'bank',
+  'india',
+  'services',
+  'tech',
+  'finance',
+  'financial',
+  'corp',
+  'hotel',
+  'hotels',
+  'pay',
+  'store',
+  'mart',
+  'foods',
+  'center',
+  'centre',
+];
 
 const cleanNarration = (value) => (
   String(value || '')
@@ -40,11 +67,12 @@ const cleanNarration = (value) => (
     .trim()
 );
 
-const detectChannel = (text) => {
+const detectChannel = (text, sourceType = 'bank') => {
+  if (sourceType === 'creditCard') return 'CARD';
   if (text.startsWith('UPI-')) return 'UPI';
   if (text.startsWith('ACH D-') || text.startsWith('ACH C-')) return 'ACH';
   if (text.startsWith('NEFTCR-') || text.startsWith('NEFT CR-') || text.startsWith('NEFT DR-') || text.startsWith('NEFTDR-')) return 'NEFT';
-  if (text.startsWith('RTGSCR')) return 'RTGS';
+  if (text.startsWith('RTGSCR') || text.startsWith('RTGSDR')) return 'RTGS';
   if (text.startsWith('IMPS')) return 'IMPS';
   if (text.startsWith('CC')) return 'CARD';
   if (text.startsWith('CHQ PAID')) return 'CHEQUE';
@@ -67,8 +95,19 @@ const prettifyMerchant = (value) => {
   return trimmed;
 };
 
-const extractFallbackMerchant = (narration) => {
+const extractFallbackMerchant = (narration, sourceType = 'bank') => {
   const text = cleanNarration(narration);
+
+  if (sourceType === 'creditCard') {
+    const compact = text
+      .replace(/\b(REF(?:ERENCE)?|TXN|TRANSACTION|ID|AUTH|NO|NUMBER)\b[:#-]?\s*[A-Z0-9-]+/gi, '')
+      .replace(/\b(?:INR|RS\.?)\b/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    if (!compact) return 'Card Merchant';
+    return prettifyMerchant(compact);
+  }
 
   if (text.startsWith('UPI-')) {
     return prettifyMerchant(text.slice(4).split('-')[0]);
@@ -79,7 +118,8 @@ const extractFallbackMerchant = (narration) => {
   if (text.startsWith('NEFTCR-') || text.startsWith('NEFT CR-') || text.startsWith('NEFT DR-') || text.startsWith('NEFTDR-')) {
     const segments = text.split('-').slice(1).filter(Boolean);
     const candidate = segments.find((segment) => (
-      !/\d/.test(segment) && !['SBI', 'HDFC', 'ICICI', 'KKBK', 'PUNB', 'UBIN', 'BARB', 'RPC DEL NEFT RTGS INTERMEDI'].includes(segment.trim())
+      !/\d/.test(segment)
+      && !['SBI', 'HDFC', 'ICICI', 'KKBK', 'PUNB', 'UBIN', 'BARB', 'RPC DEL NEFT RTGS INTERMEDI'].includes(segment.trim())
     ));
     return prettifyMerchant(candidate || segments[1] || segments[0] || 'Transfer');
   }
@@ -88,10 +128,10 @@ const extractFallbackMerchant = (narration) => {
   return prettifyMerchant(text.split('-')[0]);
 };
 
-const resolveMerchant = (narration) => {
+const resolveMerchant = (narration, sourceType = 'bank') => {
   const text = cleanNarration(narration);
   const alias = aliasRules.find((rule) => rule.pattern.test(text));
-  return alias ? alias.label : extractFallbackMerchant(text);
+  return alias ? alias.label : extractFallbackMerchant(text, sourceType);
 };
 
 const looksLikePerson = (merchant) => {
@@ -102,138 +142,171 @@ const looksLikePerson = (merchant) => {
   return tokens.every((token) => /^[A-Za-z]+$/.test(token));
 };
 
-export const classifyTransaction = (transaction) => {
-  const narration = cleanNarration(transaction.narration);
-  const text = narration.toUpperCase();
-  const merchant = resolveMerchant(narration);
-  const channel = detectChannel(text);
+const bankDebitBase = (merchant, channel, category, bucketGroup, entryKind = 'directExpense') => ({
+  merchant,
+  channel,
+  category,
+  bucketGroup,
+  incomeKind: null,
+  entryKind,
+});
 
+const bankCreditBase = (merchant, channel, category, bucketGroup, incomeKind, entryKind = 'income') => ({
+  merchant,
+  channel,
+  category,
+  bucketGroup,
+  incomeKind,
+  entryKind,
+});
+
+const classifyBankTransaction = (transaction, text, merchant, channel) => {
   if (transaction.direction === 'credit') {
     if (/FD PREMAT|PRIN AND INT AUTO[_ ]?REDEEM|AUTO[_ ]?REDEEM|FD CLOSURE|PREMATURE CLOSURE|TERM DEPOSIT CLOSURE/i.test(text)) {
-      return {
-        merchant,
-        channel,
-        category: 'FD Closure / Redemption',
-        bucketGroup: 'wealthReturn',
-        incomeKind: 'capitalReturn',
-      };
+      return bankCreditBase(merchant, channel, 'FD Closure / Redemption', 'wealthReturn', 'capitalReturn', 'wealthReturn');
     }
     if (/INTEREST|DIV|FINALDIV|FINDIV|INT DIV|SPLINTDIV|HDFCBANKSPLINTDIV/i.test(text)) {
-      return {
-        merchant,
-        channel,
-        category: 'Interest & Dividends',
-        bucketGroup: 'income',
-        incomeKind: 'passive',
-      };
+      return bankCreditBase(merchant, channel, 'Interest & Dividends', 'income', 'passive', 'income');
     }
     if (/UPIRET|REFUND|REV|REVERSE|REVERSAL|REFUPI|DUP/i.test(text)) {
-      return {
-        merchant,
-        channel,
-        category: 'Refunds & Reversals',
-        bucketGroup: 'income',
-        incomeKind: 'refund',
-      };
+      return bankCreditBase(merchant, channel, 'Refunds & Reversals', 'income', 'refund', 'refund');
     }
     if (/JILA\s*PANCHAYAT|JILLA?\s*PANCHAYAT|ZILLA\s*PANCHAYAT|NEXTBILLION|SALARY|PAYROLL|CEOJILA|RPC DEL/i.test(text)) {
-      return {
-        merchant,
-        channel,
-        category: 'Salary / Professional Income',
-        bucketGroup: 'income',
-        incomeKind: 'salary',
-      };
+      return bankCreditBase(merchant, channel, 'Salary / Professional Income', 'income', 'salary', 'income');
     }
     if (/AJAY KUMAR NAHATA|SARITA NAHATA|RACHANA SINGH|ROMIL JAIN|IMPS|TRANSFER|SBI-JAYANT|SHRI JAYANT/i.test(text)) {
-      return {
-        merchant,
-        channel,
-        category: 'Transfers In',
-        bucketGroup: 'income',
-        incomeKind: 'transfer',
-      };
+      return bankCreditBase(merchant, channel, 'Transfers In', 'income', 'transfer', 'transferIn');
     }
     if (/ACH C-/i.test(text)) {
-      return {
-        merchant,
-        channel,
-        category: 'Dividends & Corporate Credits',
-        bucketGroup: 'income',
-        incomeKind: 'passive',
-      };
+      return bankCreditBase(merchant, channel, 'Dividends & Corporate Credits', 'income', 'passive', 'income');
     }
-    return {
-      merchant,
-      channel,
-      category: 'Other Income',
-      bucketGroup: 'income',
-      incomeKind: 'other',
-    };
+    return bankCreditBase(merchant, channel, 'Other Income', 'income', 'other', 'income');
   }
 
   if (/UPI-LITE|ADD MONEY|WALLET/i.test(text)) {
-    return { merchant, channel, category: 'Wallet Top Up', bucketGroup: 'transfer', incomeKind: null };
+    return bankDebitBase(merchant, channel, 'Wallet Top Up', 'transfer', 'walletTopUp');
   }
   if (/FD THROUGH MOBILE|FIXED DEPOSIT|TERM DEPOSIT|FD BOOK|FD OPEN|FD CREATE|FD RENEW|TDR/i.test(text)) {
-    return { merchant, channel, category: 'Fixed Deposit Funding', bucketGroup: 'wealth', incomeKind: null };
+    return bankDebitBase(merchant, channel, 'Fixed Deposit Funding', 'wealth', 'investmentFunding');
   }
   if (/GROWW|GROWWINVESTTECH|INDIAN CLEARING\s*CORP|STOCK|MUTUAL|SIP|BSE\.GROWWPAY|INVEST/i.test(text)) {
-    return { merchant, channel, category: 'Investments', bucketGroup: 'wealth', incomeKind: null };
+    return bankDebitBase(merchant, channel, 'Investments', 'wealth', 'investmentFunding');
   }
   if (/CRED|AUTOPAY|IBBILLPAY|CC\d|CARD PAYMENT|TAD/i.test(text)) {
-    return { merchant, channel, category: 'Credit Card Payment', bucketGroup: 'debt', incomeKind: null };
+    return bankDebitBase(merchant, channel, 'Credit Card Settlement', 'debt', 'cardSettlement');
   }
   if (/NETFLIX|APPLE\s*MEDIA|APPLESERVI|SPOTIFY|YOUTUBE|PRIME|HOTSTAR|SONYLIV/i.test(text)) {
-    return { merchant, channel, category: 'Subscriptions', bucketGroup: 'nonEssential', incomeKind: null };
+    return bankDebitBase(merchant, channel, 'Subscriptions', 'nonEssential');
   }
   if (/UBER|OLA|METRO|RAPIDO/i.test(text)) {
-    return { merchant, channel, category: 'Local Travel', bucketGroup: 'essential', incomeKind: null };
+    return bankDebitBase(merchant, channel, 'Local Travel', 'essential');
   }
   if (/IRCTC|AIRTICKETING|CLEARTRIP|EASYTRAVELS|FLIGHT|AIR INDIA|INDIGO/i.test(text)) {
-    return { merchant, channel, category: 'Trips & Flights', bucketGroup: 'nonEssential', incomeKind: null };
+    return bankDebitBase(merchant, channel, 'Trips & Flights', 'nonEssential');
   }
   if (/HOTEL|HOTELS|RESORT|STAY/i.test(text)) {
-    return { merchant, channel, category: 'Hotels & Stays', bucketGroup: 'nonEssential', incomeKind: null };
+    return bankDebitBase(merchant, channel, 'Hotels & Stays', 'nonEssential');
   }
   if (/AMAZON|FLIPKART|AJIO|MYNTRA|NYKAA/i.test(text)) {
-    return { merchant, channel, category: 'Shopping', bucketGroup: 'nonEssential', incomeKind: null };
+    return bankDebitBase(merchant, channel, 'Shopping', 'nonEssential');
   }
   if (/BHEL|CAFE|RESTAURANT|FOOD|SWIGGY|ZOMATO|PIZZA|COFFEE|TEA/i.test(text)) {
-    return { merchant, channel, category: 'Dining & Cafes', bucketGroup: 'nonEssential', incomeKind: null };
+    return bankDebitBase(merchant, channel, 'Dining & Cafes', 'nonEssential');
   }
   if (/STORE|DAILY NEEDS|GROCERY|MART|MALVIYA STORES|SURAJ BAZAR|GENERAL STORE/i.test(text)) {
-    return { merchant, channel, category: 'Groceries', bucketGroup: 'essential', incomeKind: null };
+    return bankDebitBase(merchant, channel, 'Groceries', 'essential');
   }
   if (/MEDICAL|HOSPITAL|CLINIC|PHARMA|HEALTH/i.test(text)) {
-    return { merchant, channel, category: 'Healthcare', bucketGroup: 'essential', incomeKind: null };
+    return bankDebitBase(merchant, channel, 'Healthcare', 'essential');
   }
   if (/BILLDESK|RECHARGE|MOBILE|AIRTEL|JIO|BROADBAND|ELECTRIC|WATER|GAS|FASTAG|DTH|UTILITY/i.test(text)) {
-    return { merchant, channel, category: 'Bills & Utilities', bucketGroup: 'essential', incomeKind: null };
+    return bankDebitBase(merchant, channel, 'Bills & Utilities', 'essential');
   }
   if (/CHQ PAID|CHEQUE/i.test(text)) {
-    return { merchant, channel, category: 'Cheque & Cash', bucketGroup: 'transfer', incomeKind: null };
+    return bankDebitBase(merchant, channel, 'Cheque & Cash', 'transfer', 'transferOut');
   }
   if (/ATM|CASH WDL|CASHWITHDRAWAL/i.test(text)) {
-    return { merchant, channel, category: 'Cash Withdrawal', bucketGroup: 'transfer', incomeKind: null };
+    return bankDebitBase(merchant, channel, 'Cash Withdrawal', 'transfer', 'cashWithdrawal');
   }
   if (/RENT|LEASE|HOUSE|HOUSING/i.test(text)) {
-    return { merchant, channel, category: 'Housing', bucketGroup: 'essential', incomeKind: null };
+    return bankDebitBase(merchant, channel, 'Housing', 'essential');
   }
   if (/FEE|CHARGE|PENALTY/i.test(text)) {
-    return { merchant, channel, category: 'Fees & Charges', bucketGroup: 'uncategorized', incomeKind: null };
+    return bankDebitBase(merchant, channel, 'Fees & Charges', 'uncategorized', 'fee');
   }
   if (channel === 'UPI' && looksLikePerson(merchant)) {
-    return { merchant, channel, category: 'Transfers to People', bucketGroup: 'transfer', incomeKind: null };
+    return bankDebitBase(merchant, channel, 'Transfers to People', 'transfer', 'transferOut');
   }
 
-  return {
+  return bankDebitBase(merchant, channel, 'Miscellaneous Spend', 'uncategorized');
+};
+
+const cardBase = (merchant, category, bucketGroup, entryKind, incomeKind = null) => ({
+  merchant,
+  channel: 'CARD',
+  category,
+  bucketGroup,
+  incomeKind,
+  entryKind,
+});
+
+const classifyCardCharge = (text, merchant) => {
+  if (/CASH ADVANCE|ATM CASH|CASH WITHDRAWAL/i.test(text)) {
+    return cardBase(merchant, 'Cash Advance', 'transfer', 'cardCashAdvance');
+  }
+  if (/FINANCE CHARGE|INTEREST CHARGE|INTEREST ON EMI|GST ON INTEREST/i.test(text)) {
+    return cardBase(merchant, 'Card Interest & Finance Charges', 'uncategorized', 'cardInterest');
+  }
+  if (/ANNUAL FEE|MEMBERSHIP FEE|LATE FEE|OVERLIMIT|FEE|CHARGE|GST/i.test(text)) {
+    return cardBase(merchant, 'Card Fees & Charges', 'uncategorized', 'cardFee');
+  }
+  if (/EMI|SMART EMI|LOAN ON CARD|LOAN BOOKING/i.test(text)) {
+    return cardBase(merchant, 'Card EMI Purchase', 'capital', 'cardPurchase');
+  }
+
+  const pseudoBankTransaction = classifyBankTransaction(
+    { direction: 'debit' },
+    text,
     merchant,
-    channel,
-    category: 'Miscellaneous Spend',
-    bucketGroup: 'uncategorized',
-    incomeKind: null,
+    'CARD',
+  );
+
+  return {
+    ...pseudoBankTransaction,
+    channel: 'CARD',
+    entryKind: 'cardPurchase',
   };
+};
+
+const classifyCreditCardTransaction = (transaction, text, merchant) => {
+  if (transaction.direction === 'credit') {
+    if (/PAYMENT\s+RECEIVED|PAYMENT\s+THANK YOU|PAYMENT\s+CREDIT|AUTOPAY|NEFT|IMPS|UPI|BANK PAYMENT/i.test(text)) {
+      return cardBase(merchant, 'Card Payment Received', 'debt', 'cardPaymentReceived');
+    }
+    if (/CASHBACK|REWARD|SMARTBUY|POINTS CREDIT|BONUS/i.test(text)) {
+      return cardBase(merchant, 'Card Rewards & Cashback', 'income', 'refund', 'cardRewardCredit');
+    }
+    if (/REFUND|REVERSAL|CHARGEBACK|REVERSAL ADJUSTMENT|CR NOTE|CREDIT VOUCHER/i.test(text)) {
+      return cardBase(merchant, 'Card Refunds & Reversals', 'income', 'refund', 'cardRefund');
+    }
+    return cardBase(merchant, 'Card Credits', 'income', 'cardRefund', 'refund');
+  }
+
+  return classifyCardCharge(text, merchant);
+};
+
+export const classifyTransaction = (transaction) => {
+  const narration = cleanNarration(transaction.narration);
+  const text = narration.toUpperCase();
+  const sourceType = transaction.sourceType || (transaction.accountType === 'credit' ? 'creditCard' : 'bank');
+  const merchant = resolveMerchant(narration, sourceType);
+  const channel = detectChannel(text, sourceType);
+
+  if (sourceType === 'creditCard') {
+    return classifyCreditCardTransaction(transaction, text, merchant);
+  }
+
+  return classifyBankTransaction(transaction, text, merchant, channel);
 };
 
 export const reclassifyStoredTransaction = (transaction) => ({
@@ -244,5 +317,6 @@ export const reclassifyStoredTransaction = (transaction) => ({
     direction: transaction.direction,
     amount: transaction.amount,
     refNo: transaction.refNo,
+    sourceType: transaction.sourceType || (transaction.accountType === 'credit' ? 'creditCard' : 'bank'),
   }),
 });

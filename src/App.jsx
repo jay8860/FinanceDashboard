@@ -11,6 +11,7 @@ import {
   CalendarRange,
   ChartNoAxesCombined,
   CircleDollarSign,
+  CreditCard,
   Download,
   Filter,
   HandCoins,
@@ -44,6 +45,7 @@ import {
   YAxis,
 } from 'recharts';
 import Layout from './components/Layout.jsx';
+import BulkTransactionEditor from './components/BulkTransactionEditor.jsx';
 import RuleEditorModal from './components/RuleEditorModal.jsx';
 import SectionCard from './components/SectionCard.jsx';
 import StatCard from './components/StatCard.jsx';
@@ -51,9 +53,10 @@ import TransactionEditorModal from './components/TransactionEditorModal.jsx';
 import UploadPanel from './components/UploadPanel.jsx';
 import { buildAnalytics } from './utils/analytics.js';
 import { reclassifyStoredTransaction } from './utils/classification.js';
-import { formatCurrency, formatDateLabel, formatInteger, formatSignedCurrency, monthLabelFromKey } from './utils/format.js';
+import { formatCurrency, formatDateLabel, formatInteger, formatSignedCurrency, monthLabelFromKey, titleCaseLoose } from './utils/format.js';
 import {
   clearTransactionOverride,
+  clearMultipleTransactionOverrides,
   createEmptyProfile,
   dismissSuggestion,
   loadStoredProfile,
@@ -63,6 +66,7 @@ import {
   removeBulkRule,
   toggleBulkRule,
   upsertBulkRule,
+  upsertMultipleTransactionOverrides,
   upsertTransactionOverride,
 } from './utils/storage.js';
 import { applyOverridesToTransactions, applyRulesToTransactions, buildPassThroughSuggestions } from './utils/transactionOverrides.js';
@@ -102,6 +106,22 @@ const flowText = {
   all: 'All flows',
   debit: 'Outflows only',
   credit: 'Inflows only',
+};
+
+const analysisLensText = {
+  trueSpend: 'True spend',
+  cashFlow: 'Cash movement',
+};
+
+const accountTypeText = {
+  all: 'All ledgers',
+  cash: 'Bank accounts only',
+  credit: 'Credit cards only',
+};
+
+const statementTypeText = {
+  bank: 'Bank account',
+  creditCard: 'Credit card',
 };
 
 const reviewScopeText = {
@@ -358,6 +378,8 @@ function App() {
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [tagFilter, setTagFilter] = useState('all');
   const [amountBandFilter, setAmountBandFilter] = useState('all');
+  const [analysisLens, setAnalysisLens] = useState('trueSpend');
+  const [accountFilter, setAccountFilter] = useState('all');
   const [reviewScope, setReviewScope] = useState('included');
   const [categoryExplorerFlow, setCategoryExplorerFlow] = useState('debit');
   const [categoryExplorerSort, setCategoryExplorerSort] = useState('amount:desc');
@@ -365,6 +387,7 @@ function App() {
   const [sortDirection, setSortDirection] = useState('desc');
   const [rowsLimit, setRowsLimit] = useState('250');
   const [searchText, setSearchText] = useState('');
+  const [selectedTransactionKeys, setSelectedTransactionKeys] = useState([]);
   const [editorTransactionKey, setEditorTransactionKey] = useState(null);
   const [ruleEditorDraft, setRuleEditorDraft] = useState(null);
 
@@ -377,6 +400,7 @@ function App() {
   const scopedTransactions = effectiveTransactions.filter((transaction) => {
     if (scopeYear !== 'all' && Number(transaction.year) !== Number(scopeYear)) return false;
     if (scopeStatementId !== 'all' && transaction.statementId !== scopeStatementId) return false;
+    if (accountFilter !== 'all' && (transaction.accountType || 'cash') !== accountFilter) return false;
     return true;
   });
   const analytics = buildAnalytics(
@@ -386,10 +410,31 @@ function App() {
     },
     { year: scopeYear, statementId: scopeStatementId },
   );
+  const lensedTransactions = analysisLens === 'trueSpend'
+    ? analytics.trueSpendTransactions
+    : analytics.transactions;
+  const lensedCategoryRanking = analysisLens === 'trueSpend'
+    ? analytics.trueSpendCategoryRanking
+    : analytics.categoryRanking;
+  const lensedMerchantRanking = analysisLens === 'trueSpend'
+    ? analytics.trueSpendMerchantRanking
+    : analytics.merchantRanking;
+  const lensedBucketTotals = analysisLens === 'trueSpend'
+    ? analytics.trueSpendBucketTotals
+    : analytics.bucketTotals;
+  const lensedDayOfWeek = analysisLens === 'trueSpend'
+    ? analytics.trueSpendDayOfWeek
+    : analytics.dayOfWeek;
+  const lensedMonthSeries = analysisLens === 'trueSpend'
+    ? analytics.spendMonthSeries
+    : analytics.monthSeries;
+  const categorySummarySource = lensedTransactions.filter((transaction) => (
+    accountFilter === 'all' || (transaction.accountType || 'cash') === accountFilter
+  ));
   const merchantOptions = [...new Set(scopedTransactions.map((transaction) => transaction.merchant).filter(Boolean))].sort(compareText);
   const categoryOptions = [...new Set(scopedTransactions.map((transaction) => transaction.category).filter(Boolean))].sort(compareText);
   const tagOptions = [...new Set(scopedTransactions.flatMap((transaction) => transaction.tags || []).filter(Boolean))].sort(compareText);
-  const categorySummaries = buildCategorySummaries(analytics.transactions, categoryExplorerFlow, categoryExplorerSort);
+  const categorySummaries = buildCategorySummaries(categorySummarySource, categoryExplorerFlow, categoryExplorerSort);
   const passThroughSuggestions = buildPassThroughSuggestions(scopedTransactions, profile.dismissedSuggestionKeys);
   const customizedTransactions = effectiveTransactions.filter((transaction) => transaction.hasOverride || transaction.hasRule);
   const excludedTransactions = effectiveTransactions.filter((transaction) => transaction.excludedFromAnalysis);
@@ -407,6 +452,8 @@ function App() {
   const editorTransaction = effectiveTransactions.find((transaction) => transaction.uniqueKey === editorTransactionKey) || null;
   const categorySuggestions = [...new Set([...categoryOptions, 'Vehicle Purchase', 'Asset Purchase', 'Family Transfer', 'Investment Funding'])].sort(compareText);
   const tagSuggestions = [...new Set([...tagOptions, 'vehicle', 'asset', 'family', 'pass-through', 'one-off', 'investment', 'reimbursable'])].sort(compareText);
+  const bankStatementCount = profile.statements.filter((statement) => (statement.accountType || 'cash') !== 'credit').length;
+  const cardStatementCount = profile.statements.filter((statement) => statement.accountType === 'credit').length;
 
   useEffect(() => {
     saveStoredProfile(profile);
@@ -437,6 +484,17 @@ function App() {
   }, [tagFilter, tagOptions]);
 
   useEffect(() => {
+    const availableKeys = new Set(effectiveTransactions.map((transaction) => transaction.uniqueKey));
+    setSelectedTransactionKeys((current) => {
+      const next = current.filter((uniqueKey) => availableKeys.has(uniqueKey));
+      if (next.length === current.length && next.every((uniqueKey, index) => uniqueKey === current[index])) {
+        return current;
+      }
+      return next;
+    });
+  }, [effectiveTransactions]);
+
+  useEffect(() => {
     if (editorTransactionKey && !effectiveTransactions.some((transaction) => transaction.uniqueKey === editorTransactionKey)) {
       setEditorTransactionKey(null);
     }
@@ -460,6 +518,9 @@ function App() {
       transaction.narration,
       transaction.refNo,
       transaction.accountLabel,
+      transaction.sourceType,
+      transaction.accountType,
+      transaction.entryKind,
       transaction.note,
       ...(transaction.appliedRuleLabels || []),
       ...(transaction.tags || []),
@@ -476,6 +537,12 @@ function App() {
   const renderedTransactions = rowsLimit === 'all'
     ? visibleTransactions
     : visibleTransactions.slice(0, Number(rowsLimit));
+  const selectedTransactionKeySet = new Set(selectedTransactionKeys);
+  const selectedTransactions = effectiveTransactions.filter((transaction) => selectedTransactionKeySet.has(transaction.uniqueKey));
+  const allRenderedSelected = renderedTransactions.length > 0
+    && renderedTransactions.every((transaction) => selectedTransactionKeySet.has(transaction.uniqueKey));
+  const allVisibleSelected = visibleTransactions.length > 0
+    && visibleTransactions.every((transaction) => selectedTransactionKeySet.has(transaction.uniqueKey));
   const selectedCategorySummary = categoryFilter === 'all'
     ? null
     : {
@@ -502,10 +569,12 @@ function App() {
     setScopeStatementId('all');
     setFlowFilter('all');
     setBucketFilter('all');
+    setAccountFilter('all');
     setMerchantFilter('all');
     setCategoryFilter('all');
     setTagFilter('all');
     setAmountBandFilter('all');
+    setAnalysisLens('trueSpend');
     setReviewScope('included');
     setCategoryExplorerFlow('debit');
     setCategoryExplorerSort('amount:desc');
@@ -513,6 +582,7 @@ function App() {
     setSortDirection('desc');
     setRowsLimit('250');
     setSearchText('');
+    setSelectedTransactionKeys([]);
   };
 
   const handleSortSelection = (value) => {
@@ -638,6 +708,112 @@ function App() {
     setStatus({ type: 'success', message: 'Transaction review changes were reset to the imported values.' });
   };
 
+  const handleToggleTransactionSelection = (uniqueKey) => {
+    setSelectedTransactionKeys((current) => (
+      current.includes(uniqueKey)
+        ? current.filter((key) => key !== uniqueKey)
+        : [...current, uniqueKey]
+    ));
+  };
+
+  const handleSelectRenderedTransactions = () => {
+    if (!renderedTransactions.length) return;
+    setSelectedTransactionKeys((current) => {
+      const next = new Set(current);
+      if (allRenderedSelected) {
+        renderedTransactions.forEach((transaction) => next.delete(transaction.uniqueKey));
+      } else {
+        renderedTransactions.forEach((transaction) => next.add(transaction.uniqueKey));
+      }
+      return [...next];
+    });
+  };
+
+  const handleSelectAllFilteredTransactions = () => {
+    if (!visibleTransactions.length) return;
+    setSelectedTransactionKeys((current) => {
+      const next = new Set(current);
+      if (allVisibleSelected) {
+        visibleTransactions.forEach((transaction) => next.delete(transaction.uniqueKey));
+      } else {
+        visibleTransactions.forEach((transaction) => next.add(transaction.uniqueKey));
+      }
+      return [...next];
+    });
+  };
+
+  const handleClearTransactionSelection = () => {
+    setSelectedTransactionKeys([]);
+  };
+
+  const handleResetSelectedTransactionOverrides = () => {
+    if (!selectedTransactionKeys.length) return;
+    setProfile((current) => clearMultipleTransactionOverrides(current, selectedTransactionKeys));
+    setStatus({
+      type: 'success',
+      message: `Reset one-off overrides for ${formatInteger(selectedTransactionKeys.length)} selected transaction${selectedTransactionKeys.length === 1 ? '' : 's'}.`,
+    });
+  };
+
+  const handleApplyBulkTransactionEdit = (draft) => {
+    if (!selectedTransactions.length) return;
+
+    const patchMap = {};
+
+    selectedTransactions.forEach((transaction) => {
+      const baseTransaction = ruleAdjustedTransactions.find((item) => item.uniqueKey === transaction.uniqueKey)
+        || profile.transactions.find((item) => item.uniqueKey === transaction.uniqueKey);
+      const nextPatch = {};
+
+      if (draft.merchant) {
+        nextPatch.merchant = draft.merchant !== baseTransaction?.merchant ? draft.merchant : undefined;
+      }
+      if (draft.category) {
+        nextPatch.category = draft.category !== baseTransaction?.category ? draft.category : undefined;
+      }
+      if (draft.bucketGroup) {
+        nextPatch.bucketGroup = draft.bucketGroup !== baseTransaction?.bucketGroup ? draft.bucketGroup : undefined;
+      }
+      if (draft.tags?.length) {
+        nextPatch.tags = draft.tagMode === 'replace'
+          ? draft.tags
+          : [...new Set([...(transaction.tags || []), ...draft.tags])];
+      }
+      if (draft.note) {
+        nextPatch.note = draft.note;
+      }
+      if (draft.excludeMode === 'exclude') {
+        nextPatch.excludeFromAnalysis = true;
+      }
+      if (draft.excludeMode === 'include') {
+        nextPatch.excludeFromAnalysis = false;
+      }
+
+      const hasAction = Object.keys(nextPatch).some((key) => {
+        if (key === 'tags') return nextPatch.tags.length > 0;
+        return nextPatch[key] !== undefined;
+      });
+
+      if (hasAction) {
+        patchMap[transaction.uniqueKey] = nextPatch;
+      }
+    });
+
+    if (!Object.keys(patchMap).length) {
+      setStatus({
+        type: 'error',
+        message: 'Choose at least one merchant/category/bucket/tag/note/exclude change before applying a bulk edit.',
+      });
+      return;
+    }
+
+    setProfile((current) => upsertMultipleTransactionOverrides(current, patchMap));
+    setStatus({
+      type: 'success',
+      message: `Applied bulk edits to ${formatInteger(Object.keys(patchMap).length)} selected transaction${Object.keys(patchMap).length === 1 ? '' : 's'}.`,
+    });
+  };
+
   const handleToggleExcludeTransaction = (transaction) => {
     setProfile((current) => upsertTransactionOverride(current, transaction.uniqueKey, {
       excludeFromAnalysis: !transaction.excludedFromAnalysis,
@@ -683,7 +859,7 @@ function App() {
     setProfile((current) => dismissSuggestion(current, suggestionKey));
   };
 
-  const handleImport = async ({ files, password, mode }) => {
+  const handleImport = async ({ files, password, mode, statementType }) => {
     setImporting(true);
     setStatus(null);
 
@@ -693,7 +869,7 @@ function App() {
       const importedTransactions = [];
 
       for (const file of files) {
-        const parsed = await parseStatementPdf(file, password);
+        const parsed = await parseStatementPdf(file, password, { statementType });
         importedStatements.push(parsed.statement);
         importedTransactions.push(...parsed.transactions);
       }
@@ -715,20 +891,23 @@ function App() {
         setScopeStatementId('all');
         setFlowFilter('all');
         setBucketFilter('all');
+        setAccountFilter('all');
         setMerchantFilter('all');
         setCategoryFilter('all');
         setTagFilter('all');
         setAmountBandFilter('all');
+        setAnalysisLens('trueSpend');
         setReviewScope('included');
         setSortField('date');
         setSortDirection('desc');
         setRowsLimit('250');
         setSearchText('');
+        setSelectedTransactionKeys([]);
       });
 
       setStatus({
         type: 'success',
-        message: `Imported ${importedStatements.length} statement${importedStatements.length === 1 ? '' : 's'} and ${formatInteger(importedTransactions.length)} transactions.`,
+        message: `Imported ${importedStatements.length} statement${importedStatements.length === 1 ? '' : 's'} and ${formatInteger(importedTransactions.length)} transactions across ${formatInteger(importedStatements.filter((statement) => statement.accountType === 'credit').length)} card bill${importedStatements.filter((statement) => statement.accountType === 'credit').length === 1 ? '' : 's'} and ${formatInteger(importedStatements.filter((statement) => statement.accountType !== 'credit').length)} bank statement${importedStatements.filter((statement) => statement.accountType !== 'credit').length === 1 ? '' : 's'}.`,
       });
     } catch (error) {
       setStatus({
@@ -763,15 +942,18 @@ function App() {
     setScopeStatementId('all');
     setFlowFilter('all');
     setBucketFilter('all');
+    setAccountFilter('all');
     setMerchantFilter('all');
     setCategoryFilter('all');
     setTagFilter('all');
     setAmountBandFilter('all');
+    setAnalysisLens('trueSpend');
     setReviewScope('included');
     setSortField('date');
     setSortDirection('desc');
     setRowsLimit('250');
     setSearchText('');
+    setSelectedTransactionKeys([]);
     setStatus({ type: 'success', message: 'The local profile was cleared from this browser.' });
   };
 
@@ -779,11 +961,14 @@ function App() {
     if (!visibleTransactions.length) return;
 
     const rows = [
-      ['Date', 'Value Date', 'Flow', 'Merchant', 'Category', 'Bucket', 'Tags', 'Excluded', 'Rule labels', 'Note', 'Amount', 'Balance', 'Narration', 'Reference', 'Statement', 'Account'],
+      ['Date', 'Value Date', 'Flow', 'Source Type', 'Account Type', 'Entry Kind', 'Merchant', 'Category', 'Bucket', 'Tags', 'Excluded', 'Rule labels', 'Note', 'Amount', 'Balance', 'Narration', 'Reference', 'Statement', 'Account'],
       ...visibleTransactions.map((transaction) => ([
         transaction.date,
         transaction.valueDate,
         transaction.direction,
+        transaction.sourceType,
+        transaction.accountType,
+        transaction.entryKind || '',
         transaction.merchant,
         transaction.category,
         bucketText[transaction.bucketGroup] || transaction.bucketGroup,
@@ -792,7 +977,7 @@ function App() {
         (transaction.appliedRuleLabels || []).join(' | '),
         transaction.note || '',
         Number(transaction.amount || 0).toFixed(2),
-        Number(transaction.balance || 0).toFixed(2),
+        transaction.balance === null || transaction.balance === undefined ? '' : Number(transaction.balance || 0).toFixed(2),
         transaction.narration,
         transaction.refNo,
         transaction.statementName,
@@ -849,13 +1034,13 @@ function App() {
               </div>
               <div>
                 <h1 className="max-w-3xl text-4xl font-black tracking-tight text-slate-900 dark:text-white md:text-5xl">
-                  See your bank statements as a living
+                  See your statements as a living
                   {' '}
                   <span className="premium-gradient-text">spending profile</span>
                   .
                 </h1>
                 <p className="mt-4 max-w-3xl text-base text-slate-500 dark:text-white/55 md:text-lg">
-                  Upload annual statements one by one, merge them into a multi-year profile, and break your cash flow into essentials, lifestyle, salary-like inflows, passive income, investments, debt payments, and transfers.
+                  Upload bank statements and credit card bills one by one, merge them into a multi-year profile, and keep real spending separate from cash settlements so the dashboard stays honest.
                 </p>
               </div>
 
@@ -872,9 +1057,13 @@ function App() {
                   <ChartNoAxesCombined size={12} />
                   Replace or merge imports
                 </span>
+                <span className="tag">
+                  <CreditCard size={12} />
+                  Card bills avoid double count
+                </span>
               </div>
 
-              <div className="grid gap-4 md:grid-cols-3">
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                 <div className="rounded-[1.7rem] border border-slate-200/80 bg-white/80 p-5 dark:border-white/10 dark:bg-white/5">
                   <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400 dark:text-white/35">Statements</p>
                   <p className="mt-2 text-3xl font-black tracking-tight text-slate-900 dark:text-white">{formatInteger(profile.statements.length)}</p>
@@ -889,6 +1078,11 @@ function App() {
                   <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400 dark:text-white/35">Years visible</p>
                   <p className="mt-2 text-3xl font-black tracking-tight text-slate-900 dark:text-white">{formatInteger(years.length)}</p>
                   <p className="mt-1 text-sm text-slate-500 dark:text-white/55">Year buckets in current profile</p>
+                </div>
+                <div className="rounded-[1.7rem] border border-slate-200/80 bg-white/80 p-5 dark:border-white/10 dark:bg-white/5">
+                  <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400 dark:text-white/35">Ledgers</p>
+                  <p className="mt-2 text-3xl font-black tracking-tight text-slate-900 dark:text-white">{formatInteger(Number(bankStatementCount > 0) + Number(cardStatementCount > 0))}</p>
+                  <p className="mt-1 text-sm text-slate-500 dark:text-white/55">{formatInteger(bankStatementCount)} bank statement{bankStatementCount === 1 ? '' : 's'} · {formatInteger(cardStatementCount)} card bill{cardStatementCount === 1 ? '' : 's'}</p>
                 </div>
               </div>
             </div>
@@ -950,9 +1144,17 @@ function App() {
             <SectionCard
               id="spending"
               title="Spending"
-              subtitle="View the shape of your outflows across months, categories, and essential vs lifestyle buckets."
+              subtitle="Switch between true spend and cash movement so credit card purchases add clarity without making bank settlements look like fresh spend."
               action={(
                 <div className="flex flex-wrap gap-3">
+                  <label className="flex min-w-[190px] flex-col gap-2">
+                    <span className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400 dark:text-white/35">Analysis lens</span>
+                    <select className="control-input" value={analysisLens} onChange={(event) => setAnalysisLens(event.target.value)}>
+                      {Object.entries(analysisLensText).map(([value, label]) => (
+                        <option key={value} value={value}>{label}</option>
+                      ))}
+                    </select>
+                  </label>
                   <label className="flex min-w-[180px] flex-col gap-2">
                     <span className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400 dark:text-white/35">Scope year</span>
                     <select className="control-input" value={scopeYear} onChange={(event) => setScopeYear(event.target.value)}>
@@ -968,7 +1170,7 @@ function App() {
                       <option value="all">All imported statements</option>
                       {profile.statements.map((statement) => (
                         <option key={statement.id} value={statement.id}>
-                          {statement.sourceName}
+                          [{statementTypeText[statement.sourceType] || statement.sourceType}] {statement.sourceName}
                         </option>
                       ))}
                     </select>
@@ -978,17 +1180,30 @@ function App() {
             >
               <div className="grid gap-6 xl:grid-cols-[1.4fr_0.9fr]">
                 <div className="rounded-[1.7rem] border border-slate-200/80 bg-white/70 p-4 dark:border-white/10 dark:bg-white/[0.03]">
-                  <p className="mb-4 text-sm font-bold text-slate-700 dark:text-white">Monthly cash flow</p>
+                  <p className="mb-4 text-sm font-bold text-slate-700 dark:text-white">
+                    {analysisLens === 'trueSpend' ? 'Monthly true spend' : 'Monthly cash flow'}
+                  </p>
                   <div className="h-[320px]">
                     <ResponsiveContainer width="100%" height="100%">
-                      <ComposedChart data={analytics.monthSeries.map((month) => ({ ...month, label: monthLabelFromKey(month.monthKey) }))}>
+                      <ComposedChart data={lensedMonthSeries.map((month) => ({ ...month, label: monthLabelFromKey(month.monthKey) }))}>
                         <CartesianGrid strokeDasharray="3 3" stroke="rgba(148, 163, 184, 0.15)" />
                         <XAxis dataKey="label" tick={{ fill: '#94a3b8', fontSize: 12 }} tickLine={false} axisLine={false} />
                         <YAxis tickFormatter={(value) => `₹${Math.round(value / 1000)}k`} tick={{ fill: '#94a3b8', fontSize: 12 }} tickLine={false} axisLine={false} />
                         <Tooltip content={<ChartTooltip />} />
-                        <Bar dataKey="cashIn" name="Inflows" fill="#22c55e" radius={[8, 8, 0, 0]} />
-                        <Bar dataKey="outflow" name="Outflows" fill="#f43f5e" radius={[8, 8, 0, 0]} />
-                        <Line type="monotone" dataKey="net" name="Net" stroke="#6366f1" strokeWidth={3} dot={false} />
+                        {analysisLens === 'trueSpend' ? (
+                          <>
+                            <Bar dataKey="bankSpend" name="Direct bank spend" fill="#6366f1" radius={[8, 8, 0, 0]} />
+                            <Bar dataKey="cardSpend" name="Card spend" fill="#f97316" radius={[8, 8, 0, 0]} />
+                            <Line type="monotone" dataKey="refunds" name="Refunds" stroke="#22c55e" strokeWidth={3} dot={false} />
+                            <Line type="monotone" dataKey="netSpend" name="Net spend" stroke="#0ea5e9" strokeWidth={3} dot={false} />
+                          </>
+                        ) : (
+                          <>
+                            <Bar dataKey="cashIn" name="Inflows" fill="#22c55e" radius={[8, 8, 0, 0]} />
+                            <Bar dataKey="outflow" name="Outflows" fill="#f43f5e" radius={[8, 8, 0, 0]} />
+                            <Line type="monotone" dataKey="net" name="Net" stroke="#6366f1" strokeWidth={3} dot={false} />
+                          </>
+                        )}
                       </ComposedChart>
                     </ResponsiveContainer>
                   </div>
@@ -996,20 +1211,22 @@ function App() {
 
                 <div className="grid gap-6">
                   <div className="rounded-[1.7rem] border border-slate-200/80 bg-white/70 p-4 dark:border-white/10 dark:bg-white/[0.03]">
-                    <p className="mb-4 text-sm font-bold text-slate-700 dark:text-white">Outflow bucket mix</p>
-                    {analytics.bucketTotals.length ? (
+                    <p className="mb-4 text-sm font-bold text-slate-700 dark:text-white">
+                      {analysisLens === 'trueSpend' ? 'True-spend bucket mix' : 'Cash-out bucket mix'}
+                    </p>
+                    {lensedBucketTotals.length ? (
                       <div className="h-[280px]">
                         <ResponsiveContainer width="100%" height="100%">
                           <PieChart>
                             <Pie
-                              data={analytics.bucketTotals}
+                              data={lensedBucketTotals}
                               dataKey="value"
                               nameKey="label"
                               innerRadius={68}
                               outerRadius={94}
                               paddingAngle={3}
                             >
-                              {analytics.bucketTotals.map((entry) => (
+                              {lensedBucketTotals.map((entry) => (
                                 <Cell key={entry.label} fill={entry.color} />
                               ))}
                             </Pie>
@@ -1018,10 +1235,10 @@ function App() {
                         </ResponsiveContainer>
                       </div>
                     ) : (
-                      <EmptyState title="No outflow mix yet" body="Import a statement with debit transactions to see this chart." />
+                      <EmptyState title="No bucket mix yet" body="Import more statement activity to populate this view." />
                     )}
                     <div className="mt-4 flex flex-wrap gap-2">
-                      {analytics.bucketTotals.map((entry) => (
+                      {lensedBucketTotals.map((entry) => (
                         <span key={entry.label} className="tag normal-case tracking-normal">
                           <span className="h-2.5 w-2.5 rounded-full" style={{ background: entry.color }} />
                           {entry.label}
@@ -1033,21 +1250,37 @@ function App() {
                   <div className="rounded-[1.7rem] border border-slate-200/80 bg-white/70 p-5 dark:border-white/10 dark:bg-white/[0.03]">
                     <div className="grid gap-4 md:grid-cols-2">
                       <div>
-                        <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400 dark:text-white/35">Essential spend</p>
-                        <p className="mt-2 text-2xl font-black text-slate-900 dark:text-white">{formatCurrency(analytics.coreSpend)}</p>
-                      </div>
-                      <div>
-                        <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400 dark:text-white/35">Non-essential spend</p>
-                        <p className="mt-2 text-2xl font-black text-slate-900 dark:text-white">{formatCurrency(analytics.lifestyleSpend)}</p>
-                      </div>
-                      <div>
-                        <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400 dark:text-white/35">Money moves</p>
-                        <p className="mt-2 text-2xl font-black text-slate-900 dark:text-white">{formatCurrency(analytics.moneyMoves)}</p>
-                      </div>
-                      <div>
-                        <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400 dark:text-white/35">Largest debit</p>
+                        <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400 dark:text-white/35">
+                          {analysisLens === 'trueSpend' ? 'Net true spend' : 'Essential spend'}
+                        </p>
                         <p className="mt-2 text-2xl font-black text-slate-900 dark:text-white">
-                          {analytics.biggestDebit ? formatCurrency(analytics.biggestDebit.amount) : formatCurrency(0)}
+                          {analysisLens === 'trueSpend' ? formatCurrency(analytics.trueSpendNet) : formatCurrency(analytics.coreSpend)}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400 dark:text-white/35">
+                          {analysisLens === 'trueSpend' ? 'Refund offsets' : 'Non-essential spend'}
+                        </p>
+                        <p className="mt-2 text-2xl font-black text-slate-900 dark:text-white">
+                          {analysisLens === 'trueSpend' ? formatCurrency(analytics.spendRefundTotal) : formatCurrency(analytics.lifestyleSpend)}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400 dark:text-white/35">
+                          {analysisLens === 'trueSpend' ? 'Direct bank spend' : 'Money moves'}
+                        </p>
+                        <p className="mt-2 text-2xl font-black text-slate-900 dark:text-white">
+                          {analysisLens === 'trueSpend' ? formatCurrency(analytics.bankSpendTotal) : formatCurrency(analytics.moneyMoves)}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400 dark:text-white/35">
+                          {analysisLens === 'trueSpend' ? 'Credit card spend' : 'Largest debit'}
+                        </p>
+                        <p className="mt-2 text-2xl font-black text-slate-900 dark:text-white">
+                          {analysisLens === 'trueSpend'
+                            ? formatCurrency(analytics.creditCardSpendTotal)
+                            : (analytics.biggestDebit ? formatCurrency(analytics.biggestDebit.amount) : formatCurrency(0))}
                         </p>
                       </div>
                     </div>
@@ -1057,12 +1290,14 @@ function App() {
 
               <div className="mt-6 grid gap-6 xl:grid-cols-[1.25fr_0.95fr]">
                 <div className="rounded-[1.7rem] border border-slate-200/80 bg-white/70 p-4 dark:border-white/10 dark:bg-white/[0.03]">
-                  <p className="mb-4 text-sm font-bold text-slate-700 dark:text-white">Top spend categories</p>
-                  {analytics.categoryRanking.length ? (
+                  <p className="mb-4 text-sm font-bold text-slate-700 dark:text-white">
+                    {analysisLens === 'trueSpend' ? 'Top true-spend categories' : 'Top cash-out categories'}
+                  </p>
+                  {lensedCategoryRanking.length ? (
                     <div className="h-[320px]">
                       <ResponsiveContainer width="100%" height="100%">
                         <BarChart
-                          data={analytics.categoryRanking.slice(0, 8).map((item) => ({ ...item, label: item.label }))}
+                          data={lensedCategoryRanking.slice(0, 8).map((item) => ({ ...item, label: item.label }))}
                           layout="vertical"
                           margin={{ left: 30 }}
                         >
@@ -1075,20 +1310,22 @@ function App() {
                       </ResponsiveContainer>
                     </div>
                   ) : (
-                    <EmptyState title="No spend categories yet" body="Once debits are present, category rankings will appear here." />
+                    <EmptyState title="No spend categories yet" body="Once spending rows are present, category rankings will appear here." />
                   )}
                 </div>
 
                 <div className="rounded-[1.7rem] border border-slate-200/80 bg-white/70 p-4 dark:border-white/10 dark:bg-white/[0.03]">
-                  <p className="mb-4 text-sm font-bold text-slate-700 dark:text-white">Spend by weekday</p>
+                  <p className="mb-4 text-sm font-bold text-slate-700 dark:text-white">
+                    {analysisLens === 'trueSpend' ? 'True spend by weekday' : 'Cash out by weekday'}
+                  </p>
                   <div className="h-[320px]">
                     <ResponsiveContainer width="100%" height="100%">
-                      <AreaChart data={analytics.dayOfWeek}>
+                      <AreaChart data={lensedDayOfWeek}>
                         <CartesianGrid strokeDasharray="3 3" stroke="rgba(148, 163, 184, 0.15)" />
                         <XAxis dataKey="label" tick={{ fill: '#94a3b8', fontSize: 12 }} tickLine={false} axisLine={false} />
                         <YAxis tickFormatter={(value) => `₹${Math.round(value / 1000)}k`} tick={{ fill: '#94a3b8', fontSize: 12 }} tickLine={false} axisLine={false} />
                         <Tooltip content={<ChartTooltip />} />
-                        <Area type="monotone" dataKey="amount" name="Debit spend" stroke="#0ea5e9" fill="rgba(14, 165, 233, 0.35)" strokeWidth={3} />
+                        <Area type="monotone" dataKey="amount" name={analysisLens === 'trueSpend' ? 'True spend' : 'Cash out'} stroke="#0ea5e9" fill="rgba(14, 165, 233, 0.35)" strokeWidth={3} />
                       </AreaChart>
                     </ResponsiveContainer>
                   </div>
@@ -1187,15 +1424,121 @@ function App() {
             </SectionCard>
 
             <SectionCard
+              id="cards"
+              title="Cards"
+              subtitle="Use card bills for merchant-level spend analysis while keeping bank card payments in a separate settlement lane."
+            >
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+                <div className="rounded-[1.6rem] border border-slate-200/80 bg-white/70 p-5 dark:border-white/10 dark:bg-white/[0.03]">
+                  <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400 dark:text-white/35">Card spend</p>
+                  <p className="mt-2 text-2xl font-black text-slate-900 dark:text-white">{formatCurrency(analytics.creditCardSpendTotal)}</p>
+                  <p className="mt-2 text-sm text-slate-500 dark:text-white/55">Purchases and card fees from imported credit card bills</p>
+                </div>
+                <div className="rounded-[1.6rem] border border-slate-200/80 bg-white/70 p-5 dark:border-white/10 dark:bg-white/[0.03]">
+                  <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400 dark:text-white/35">Refunds & rewards</p>
+                  <p className="mt-2 text-2xl font-black text-slate-900 dark:text-white">{formatCurrency(analytics.cardRefundTotal + analytics.cardRewardTotal)}</p>
+                  <p className="mt-2 text-sm text-slate-500 dark:text-white/55">{formatCurrency(analytics.cardRewardTotal)} of this came from card rewards or cashback credits</p>
+                </div>
+                <div className="rounded-[1.6rem] border border-slate-200/80 bg-white/70 p-5 dark:border-white/10 dark:bg-white/[0.03]">
+                  <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400 dark:text-white/35">Bank settlements</p>
+                  <p className="mt-2 text-2xl font-black text-slate-900 dark:text-white">{formatCurrency(analytics.cardSettlementTotal)}</p>
+                  <p className="mt-2 text-sm text-slate-500 dark:text-white/55">Detected bank outflows labeled as credit card settlements</p>
+                </div>
+                <div className="rounded-[1.6rem] border border-slate-200/80 bg-white/70 p-5 dark:border-white/10 dark:bg-white/[0.03]">
+                  <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400 dark:text-white/35">Card payments on bills</p>
+                  <p className="mt-2 text-2xl font-black text-slate-900 dark:text-white">{formatCurrency(analytics.cardPaymentsReceivedTotal)}</p>
+                  <p className="mt-2 text-sm text-slate-500 dark:text-white/55">Credits detected inside imported card ledgers themselves</p>
+                </div>
+                <div className="rounded-[1.6rem] border border-slate-200/80 bg-white/70 p-5 dark:border-white/10 dark:bg-white/[0.03]">
+                  <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400 dark:text-white/35">Card bills imported</p>
+                  <p className="mt-2 text-2xl font-black text-slate-900 dark:text-white">{formatInteger(cardStatementCount)}</p>
+                  <p className="mt-2 text-sm text-slate-500 dark:text-white/55">Importing bills here improves spend categorization without inflating totals</p>
+                </div>
+              </div>
+
+              <div className="mt-6 grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
+                <div className="rounded-[1.7rem] border border-slate-200/80 bg-white/70 p-4 dark:border-white/10 dark:bg-white/[0.03]">
+                  <p className="mb-4 text-sm font-bold text-slate-700 dark:text-white">Top card categories</p>
+                  {analytics.cardCategoryRanking.length ? (
+                    <div className="h-[320px]">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={analytics.cardCategoryRanking.slice(0, 8)} layout="vertical" margin={{ left: 30 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="rgba(148, 163, 184, 0.15)" horizontal={false} />
+                          <XAxis type="number" tickFormatter={(value) => `₹${Math.round(value / 1000)}k`} tick={{ fill: '#94a3b8', fontSize: 12 }} tickLine={false} axisLine={false} />
+                          <YAxis type="category" dataKey="label" tick={{ fill: '#94a3b8', fontSize: 12 }} tickLine={false} axisLine={false} width={150} />
+                          <Tooltip content={<ChartTooltip />} />
+                          <Bar dataKey="amount" name="Card spend" fill="#f97316" radius={[0, 10, 10, 0]} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  ) : (
+                    <EmptyState title="No card bills imported yet" body="Once you add credit card PDFs, their merchant and category detail will show here while bank settlements stay separate." />
+                  )}
+                </div>
+
+                <div className="space-y-6">
+                  <div className="rounded-[1.7rem] border border-slate-200/80 bg-white/70 p-5 dark:border-white/10 dark:bg-white/[0.03]">
+                    <p className="text-sm font-bold text-slate-700 dark:text-white">Card accounts in scope</p>
+                    <div className="mt-4 space-y-3">
+                      {analytics.cardAccountSummaries.length ? analytics.cardAccountSummaries.map((card) => (
+                        <div key={card.label} className="rounded-2xl border border-slate-200/80 bg-slate-50/80 px-4 py-3 dark:border-white/10 dark:bg-white/5">
+                          <div className="flex items-start justify-between gap-4">
+                            <div>
+                              <p className="font-bold text-slate-800 dark:text-white">{card.label}</p>
+                              <p className="mt-1 text-sm text-slate-500 dark:text-white/55">
+                                {formatInteger(card.transactionCount)} card rows · {formatInteger(card.statementCount)} bill{card.statementCount === 1 ? '' : 's'} · latest {formatDateLabel(card.lastDate)}
+                              </p>
+                            </div>
+                            <p className="text-sm font-black text-slate-800 dark:text-white">{formatCurrency(card.netSpend)}</p>
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <span className="tag normal-case tracking-normal">Spend {formatCurrency(card.spend)}</span>
+                            <span className="tag normal-case tracking-normal">Refunds {formatCurrency(card.refunds)}</span>
+                            <span className="tag normal-case tracking-normal">Payments {formatCurrency(card.payments)}</span>
+                            <span className="tag normal-case tracking-normal">Fees {formatCurrency(card.fees)}</span>
+                          </div>
+                        </div>
+                      )) : (
+                        <EmptyState title="No card ledger yet" body="The rest of the dashboard is ready. Once a card statement lands, it will slot into this section automatically." />
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="rounded-[1.7rem] border border-slate-200/80 bg-white/70 p-5 dark:border-white/10 dark:bg-white/[0.03]">
+                    <p className="text-sm font-bold text-slate-700 dark:text-white">Why this avoids double counting</p>
+                    <div className="mt-4 space-y-3">
+                      <div className="rounded-2xl border border-slate-200/80 bg-slate-50/80 px-4 py-3 dark:border-white/10 dark:bg-white/5">
+                        <p className="font-bold text-slate-800 dark:text-white">Card purchase</p>
+                        <p className="mt-1 text-sm text-slate-500 dark:text-white/55">Counts in true spend and merchant/category analysis.</p>
+                      </div>
+                      <div className="rounded-2xl border border-slate-200/80 bg-slate-50/80 px-4 py-3 dark:border-white/10 dark:bg-white/5">
+                        <p className="font-bold text-slate-800 dark:text-white">Bank payment to card</p>
+                        <p className="mt-1 text-sm text-slate-500 dark:text-white/55">Counts only in cash movement as a settlement, not as fresh spending.</p>
+                      </div>
+                      <div className="rounded-2xl border border-slate-200/80 bg-slate-50/80 px-4 py-3 dark:border-white/10 dark:bg-white/5">
+                        <p className="font-bold text-slate-800 dark:text-white">Card refunds and cashback</p>
+                        <p className="mt-1 text-sm text-slate-500 dark:text-white/55">Reduce spend totals instead of inflating income.</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </SectionCard>
+
+            <SectionCard
               id="merchants"
               title="Merchants"
-              subtitle="See the merchants, platforms, and recurring subscriptions that absorbed the most money."
+              subtitle={analysisLens === 'trueSpend'
+                ? 'See the merchants, platforms, and subscriptions that absorbed the most real spend across bank and card ledgers.'
+                : 'See the merchants and payees that absorbed the most bank cash movement.'}
             >
               <div className="grid gap-6 xl:grid-cols-[1.2fr_1fr]">
                 <div className="rounded-[1.7rem] border border-slate-200/80 bg-white/70 p-5 dark:border-white/10 dark:bg-white/[0.03]">
-                  <p className="text-sm font-bold text-slate-700 dark:text-white">Top debit merchants</p>
+                  <p className="text-sm font-bold text-slate-700 dark:text-white">
+                    {analysisLens === 'trueSpend' ? 'Top spend merchants' : 'Top cash-out merchants'}
+                  </p>
                   <div className="mt-4 space-y-3">
-                    {analytics.merchantRanking.slice(0, 10).map((merchant, index) => (
+                    {lensedMerchantRanking.length ? lensedMerchantRanking.slice(0, 10).map((merchant, index) => (
                       <div key={merchant.label} className="flex items-center justify-between gap-4 rounded-2xl border border-slate-200/80 bg-slate-50/80 px-4 py-3 dark:border-white/10 dark:bg-white/5">
                         <div className="flex items-center gap-4">
                           <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-slate-100 text-sm font-black text-slate-500 dark:bg-white/5 dark:text-white/55">
@@ -1210,7 +1553,9 @@ function App() {
                         </div>
                         <p className="text-sm font-black text-slate-800 dark:text-white">{formatCurrency(merchant.amount)}</p>
                       </div>
-                    ))}
+                    )) : (
+                      <EmptyState title="No merchant concentration yet" body="Import more activity in this scope to see which merchants dominate the selected lens." />
+                    )}
                   </div>
                 </div>
 
@@ -1240,17 +1585,30 @@ function App() {
                     <p className="mb-4 text-sm font-bold text-slate-700 dark:text-white">Largest movements</p>
                     <div className="grid gap-4 md:grid-cols-2">
                       <div className="rounded-2xl border border-slate-200/80 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-white/5">
-                        <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400 dark:text-white/35">Biggest debit</p>
-                        {analytics.biggestDebit ? (
+                        <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400 dark:text-white/35">
+                          {analysisLens === 'trueSpend' ? 'Biggest spend item' : 'Biggest debit'}
+                        </p>
+                        {(analysisLens === 'trueSpend' ? analytics.biggestSpend : analytics.biggestDebit) ? (
                           <>
-                            <p className="mt-2 text-lg font-black text-slate-900 dark:text-white">{analytics.biggestDebit.merchant}</p>
-                            <p className="mt-1 text-sm text-slate-500 dark:text-white/55">{formatCurrency(analytics.biggestDebit.amount)} · {formatDateLabel(analytics.biggestDebit.date)}</p>
+                            <p className="mt-2 text-lg font-black text-slate-900 dark:text-white">
+                              {(analysisLens === 'trueSpend' ? analytics.biggestSpend : analytics.biggestDebit).merchant}
+                            </p>
+                            <p className="mt-1 text-sm text-slate-500 dark:text-white/55">
+                              {formatCurrency((analysisLens === 'trueSpend' ? analytics.biggestSpend : analytics.biggestDebit).amount)} · {formatDateLabel((analysisLens === 'trueSpend' ? analytics.biggestSpend : analytics.biggestDebit).date)}
+                            </p>
                           </>
                         ) : null}
                       </div>
                       <div className="rounded-2xl border border-slate-200/80 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-white/5">
-                        <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400 dark:text-white/35">Biggest credit</p>
-                        {analytics.biggestCredit ? (
+                        <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400 dark:text-white/35">
+                          {analysisLens === 'trueSpend' ? 'Card settlements avoided' : 'Biggest credit'}
+                        </p>
+                        {analysisLens === 'trueSpend' ? (
+                          <>
+                            <p className="mt-2 text-lg font-black text-slate-900 dark:text-white">{formatCurrency(analytics.cardSettlementTotal)}</p>
+                            <p className="mt-1 text-sm text-slate-500 dark:text-white/55">Shown separately in cash flow so purchases are not counted twice</p>
+                          </>
+                        ) : analytics.biggestCredit ? (
                           <>
                             <p className="mt-2 text-lg font-black text-slate-900 dark:text-white">{analytics.biggestCredit.merchant}</p>
                             <p className="mt-1 text-sm text-slate-500 dark:text-white/55">{formatCurrency(analytics.biggestCredit.amount)} · {formatDateLabel(analytics.biggestCredit.date)}</p>
@@ -1608,6 +1966,7 @@ function App() {
                             <p className="font-bold text-slate-800 dark:text-white">{statement.sourceName}</p>
                             <div className="mt-2 flex flex-wrap gap-2">
                               <span className="tag normal-case tracking-normal">{statement.accountLabel}</span>
+                              <span className="tag normal-case tracking-normal">{statementTypeText[statement.sourceType] || statement.sourceType}</span>
                               <span className="tag normal-case tracking-normal">{formatDateLabel(statement.fromDate)} - {formatDateLabel(statement.toDate)}</span>
                             </div>
                             <p className="mt-3 text-sm text-slate-500 dark:text-white/55">
@@ -1633,7 +1992,7 @@ function App() {
             <SectionCard
               id="categories"
               title="Categories"
-              subtitle="See category totals side by side, sort them by value, and click any category to drill straight into the matching transactions."
+              subtitle={`See category totals side by side under the current ${analysisLensText[analysisLens].toLowerCase()} lens, then click any category to drill straight into the matching transactions.`}
             >
               <div className="mb-5 rounded-[1.6rem] border border-slate-200/80 bg-white/70 p-4 dark:border-white/10 dark:bg-white/[0.03]">
                 <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
@@ -1776,7 +2135,7 @@ function App() {
             <SectionCard
               id="transactions"
               title="Transactions"
-              subtitle="Search, sort, and drill into the parsed ledger without reopening the PDF."
+              subtitle="Search, sort, and drill into the parsed bank and card ledgers without reopening the PDFs."
             >
               {selectedCategorySummary ? (
                 <div className="mb-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -1803,6 +2162,21 @@ function App() {
                 </div>
               ) : null}
 
+              <BulkTransactionEditor
+                selectionCount={selectedTransactionKeys.length}
+                visibleCount={visibleTransactions.length}
+                renderedCount={renderedTransactions.length}
+                bucketOptions={bucketOptions}
+                categorySuggestions={categorySuggestions}
+                merchantSuggestions={merchantOptions}
+                tagSuggestions={tagSuggestions}
+                onApply={handleApplyBulkTransactionEdit}
+                onResetSelected={handleResetSelectedTransactionOverrides}
+                onClearSelection={handleClearTransactionSelection}
+                onSelectVisible={handleSelectRenderedTransactions}
+                onSelectAllFiltered={handleSelectAllFilteredTransactions}
+              />
+
               <div className="mb-5 rounded-[1.6rem] border border-slate-200/80 bg-white/70 p-4 dark:border-white/10 dark:bg-white/[0.03]">
                 <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
                   <label className="flex min-w-[160px] flex-col gap-2">
@@ -1819,7 +2193,17 @@ function App() {
                     <select className="control-input" value={scopeStatementId} onChange={(event) => setScopeStatementId(event.target.value)}>
                       <option value="all">All statements</option>
                       {profile.statements.map((statement) => (
-                        <option key={statement.id} value={statement.id}>{statement.sourceName}</option>
+                        <option key={statement.id} value={statement.id}>
+                          [{statementTypeText[statement.sourceType] || statement.sourceType}] {statement.sourceName}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="flex min-w-[190px] flex-col gap-2">
+                    <span className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400 dark:text-white/35">Ledger</span>
+                    <select className="control-input" value={accountFilter} onChange={(event) => setAccountFilter(event.target.value)}>
+                      {Object.entries(accountTypeText).map(([value, label]) => (
+                        <option key={value} value={value}>{label}</option>
                       ))}
                     </select>
                   </label>
@@ -1940,6 +2324,12 @@ function App() {
                   <Filter size={12} />
                   {formatInteger(visibleTransactions.length)} visible rows
                 </span>
+                {selectedTransactionKeys.length ? (
+                  <span className="tag">
+                    <CheckCheck size={12} />
+                    {formatInteger(selectedTransactionKeys.length)} selected
+                  </span>
+                ) : null}
                 <span className="tag">
                   <CircleOff size={12} />
                   {reviewScopeText[reviewScope]}
@@ -1947,6 +2337,10 @@ function App() {
                 <span className="tag">
                   <BadgeIndianRupee size={12} />
                   {scopeYear === 'all' ? 'All years' : `Year ${scopeYear}`}
+                </span>
+                <span className="tag">
+                  <CreditCard size={12} />
+                  {accountTypeText[accountFilter]}
                 </span>
                 <span className="tag">
                   <ArrowDownUp size={12} />
@@ -1978,6 +2372,17 @@ function App() {
                 <table className="data-table">
                   <thead>
                     <tr>
+                      <th>
+                        <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-500 dark:text-white/55">
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                            checked={allRenderedSelected}
+                            onChange={handleSelectRenderedTransactions}
+                          />
+                          Select
+                        </label>
+                      </th>
                       <th>
                         <SortableHeader
                           label="Date"
@@ -2038,6 +2443,14 @@ function App() {
                     {renderedTransactions.map((transaction) => (
                       <tr key={transaction.id} className="hover:bg-slate-50/70 dark:hover:bg-white/[0.02]">
                         <td>
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                            checked={selectedTransactionKeySet.has(transaction.uniqueKey)}
+                            onChange={() => handleToggleTransactionSelection(transaction.uniqueKey)}
+                          />
+                        </td>
+                        <td>
                           <p className="font-semibold text-slate-800 dark:text-white">{formatDateLabel(transaction.date)}</p>
                           <p className="mt-1 text-xs text-slate-400 dark:text-white/35">{transaction.valueDate !== transaction.date ? `Value: ${formatDateLabel(transaction.valueDate)}` : 'Value same day'}</p>
                         </td>
@@ -2070,10 +2483,20 @@ function App() {
                         <td className={`font-black ${transaction.direction === 'credit' ? 'text-emerald-600 dark:text-emerald-300' : 'text-rose-600 dark:text-rose-300'}`}>
                           {formatCurrency(transaction.amount)}
                         </td>
-                        <td>{formatCurrency(transaction.balance)}</td>
+                        <td>{transaction.balance === null || transaction.balance === undefined ? '—' : formatCurrency(transaction.balance)}</td>
                         <td>
                           <p className="font-semibold text-slate-700 dark:text-white/80">{transaction.accountLabel}</p>
-                          <p className="mt-1 text-xs text-slate-400 dark:text-white/35">{transaction.statementName}</p>
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:bg-white/5 dark:text-white/55">
+                              {statementTypeText[transaction.sourceType] || transaction.sourceType}
+                            </span>
+                            {transaction.entryKind ? (
+                              <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:bg-white/5 dark:text-white/55">
+                                {titleCaseLoose(String(transaction.entryKind).replace(/([A-Z])/g, ' $1').replace(/_/g, ' '))}
+                              </span>
+                            ) : null}
+                          </div>
+                          <p className="mt-2 text-xs text-slate-400 dark:text-white/35">{transaction.statementName}</p>
                         </td>
                         <td>
                           <div className="flex flex-col items-start gap-2">
@@ -2134,7 +2557,7 @@ function App() {
                     ))}
                     {!visibleTransactions.length ? (
                       <tr>
-                        <td colSpan="9" className="px-6 py-10">
+                        <td colSpan="10" className="px-6 py-10">
                           <EmptyState title="No transactions match these filters" body="Try changing the merchant, category, amount band, statement scope, or search term." />
                         </td>
                       </tr>
@@ -2148,7 +2571,7 @@ function App() {
           <SectionCard
             id="spending"
             title="Ready for import"
-            subtitle="Once you upload a statement, the dashboard will automatically build category splits, cash-flow trends, salary-like credit detection, recurring merchant patterns, and a searchable transaction ledger."
+            subtitle="Once you upload a bank statement or credit card bill, the dashboard will automatically build category splits, cash-flow trends, true-spend analysis, recurring merchant patterns, and a searchable ledger."
           >
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
               <StatCard title="Essentials vs lifestyle" value="Auto-bucketed" helpText="Daily living, discretionary spend, transfers, debt, and investments" icon={HandCoins} color="emerald" />

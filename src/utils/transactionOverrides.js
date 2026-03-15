@@ -97,7 +97,9 @@ export const applyOverridesToTransactions = (transactions = [], overrides = {}) 
 );
 
 const isInvestmentLike = (transaction) => (
-  transaction.direction === 'debit'
+  (transaction.accountType || 'cash') === 'cash'
+  && transaction.entryKind !== 'cardSettlement'
+  && transaction.direction === 'debit'
   && (
     transaction.bucketGroup === 'wealth'
     || INVESTMENT_TEXT.test(`${transaction.category} ${transaction.merchant} ${transaction.narration}`)
@@ -118,7 +120,11 @@ const isPassThroughCandidate = (credit, debit) => {
 export const buildPassThroughSuggestions = (transactions = [], dismissedSuggestionKeys = []) => {
   const ignored = new Set(dismissedSuggestionKeys || []);
   const credits = transactions
-    .filter((transaction) => transaction.direction === 'credit' && !transaction.excludedFromAnalysis)
+    .filter((transaction) => (
+      (transaction.accountType || 'cash') === 'cash'
+      && transaction.direction === 'credit'
+      && !transaction.excludedFromAnalysis
+    ))
     .sort((left, right) => (
       left.date.localeCompare(right.date)
       || Number(left.amount || 0) - Number(right.amount || 0)

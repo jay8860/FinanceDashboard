@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   BarChart3,
+  CreditCard,
   Database,
   FileSpreadsheet,
   LayoutDashboard,
@@ -19,6 +20,7 @@ const navItems = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard, desc: 'Snapshot & imports' },
   { id: 'spending', label: 'Spending', icon: WalletCards, desc: 'Outflows & habits' },
   { id: 'income', label: 'Income', icon: ReceiptIndianRupee, desc: 'Salary & credits' },
+  { id: 'cards', label: 'Cards', icon: CreditCard, desc: 'Card spend & settlements' },
   { id: 'merchants', label: 'Merchants', icon: BarChart3, desc: 'Who gets paid' },
   { id: 'categories', label: 'Categories', icon: BarChart3, desc: 'Category drilldowns' },
   { id: 'review', label: 'Review', icon: SlidersHorizontal, desc: 'Overrides & cleanup' },

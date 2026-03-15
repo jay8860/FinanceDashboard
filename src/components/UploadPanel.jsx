@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { DatabaseZap, FileStack, LockKeyhole, Replace, Upload, WandSparkles } from 'lucide-react';
+import { CreditCard, DatabaseZap, FileStack, Landmark, LockKeyhole, Replace, Upload, WandSparkles } from 'lucide-react';
 
 const modes = [
   {
@@ -16,15 +16,37 @@ const modes = [
   },
 ];
 
+const importTypes = [
+  {
+    value: 'auto',
+    label: 'Auto-detect',
+    icon: DatabaseZap,
+    description: 'Try to detect whether these PDFs are bank statements or credit card bills.',
+  },
+  {
+    value: 'bank',
+    label: 'Bank account',
+    icon: Landmark,
+    description: 'Use the HDFC account-statement parser for cash account imports.',
+  },
+  {
+    value: 'creditCard',
+    label: 'Credit card',
+    icon: CreditCard,
+    description: 'Use the credit-card statement flow so purchases stay separate from bank settlements.',
+  },
+];
+
 const UploadPanel = ({ hasExistingData, importing, status, onImport }) => {
   const [password, setPassword] = useState('');
   const [files, setFiles] = useState([]);
   const [mode, setMode] = useState(hasExistingData ? 'merge' : 'replace');
+  const [statementType, setStatementType] = useState('auto');
 
   const handleSubmit = async (event) => {
     event.preventDefault();
     if (!files.length) return;
-    await onImport({ files, password, mode });
+    await onImport({ files, password, mode, statementType });
     setFiles([]);
   };
 
@@ -39,7 +61,7 @@ const UploadPanel = ({ hasExistingData, importing, status, onImport }) => {
             Import statements
           </p>
           <p className="mt-1 text-sm text-slate-500 dark:text-white/55">
-            PDFs are parsed in your browser. The password is used only for reading the file and is not stored.
+            PDFs are parsed in your browser. Bank accounts and credit cards can live together here, but card bills are analyzed separately from bank settlements to avoid double counting.
           </p>
         </div>
       </div>
@@ -83,6 +105,31 @@ const UploadPanel = ({ hasExistingData, importing, status, onImport }) => {
             ))}
           </div>
         ) : null}
+
+        <div className="grid gap-3 lg:grid-cols-3">
+          {importTypes.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              onClick={() => setStatementType(option.value)}
+              className={`rounded-[1.5rem] border p-4 text-left transition-premium ${
+                statementType === option.value
+                  ? 'border-indigo-400 bg-indigo-50/80 shadow-lg shadow-indigo-500/10 dark:border-indigo-400 dark:bg-indigo-500/10'
+                  : 'border-slate-200/80 bg-white/70 hover:border-indigo-200 dark:border-white/10 dark:bg-white/5 dark:hover:border-white/20'
+              }`}
+            >
+              <div className="flex items-start gap-3">
+                <div className={`rounded-2xl p-3 ${statementType === option.value ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-500 dark:bg-white/5 dark:text-white/55'}`}>
+                  <option.icon size={18} />
+                </div>
+                <div>
+                  <p className="font-bold text-slate-800 dark:text-white">{option.label}</p>
+                  <p className="mt-1 text-sm text-slate-500 dark:text-white/55">{option.description}</p>
+                </div>
+              </div>
+            </button>
+          ))}
+        </div>
 
         <div className="grid gap-3 md:grid-cols-2">
           {modes.map((option) => (
