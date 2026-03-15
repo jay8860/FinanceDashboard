@@ -1,0 +1,108 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800;900&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+
+  :root.dark {
+    color-scheme: dark;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply antialiased text-slate-900 bg-slate-50 dark:bg-dark-bg dark:text-dark-text transition-colors duration-300;
+    font-family: 'Outfit', sans-serif;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  button,
+  input,
+  select {
+    font: inherit;
+  }
+
+  ::selection {
+    @apply bg-indigo-500/20 text-slate-900 dark:text-white;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-slate-200 dark:bg-slate-800 rounded-full hover:bg-slate-300 dark:hover:bg-slate-700 transition-colors;
+}
+
+@layer components {
+  .glass-card {
+    @apply bg-white/70 dark:bg-dark-card/60 backdrop-blur-premium border border-white/20 dark:border-white/5 shadow-premium;
+  }
+
+  .premium-border {
+    @apply border-slate-200/60 dark:border-white/10;
+  }
+
+  .premium-gradient-text {
+    @apply bg-gradient-to-r from-indigo-600 via-sky-500 to-violet-500 bg-clip-text text-transparent;
+  }
+
+  .control-shell {
+    @apply rounded-2xl border border-slate-200/80 dark:border-white/10 bg-white/80 dark:bg-white/5 px-4 py-3 text-sm text-slate-700 dark:text-slate-100 shadow-inner shadow-slate-900/[0.03] dark:shadow-black/10 transition-colors;
+  }
+
+  .control-input {
+    @apply control-shell w-full outline-none focus:border-indigo-400 dark:focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/20;
+  }
+
+  .tag {
+    @apply inline-flex items-center gap-2 rounded-full border border-slate-200/80 dark:border-white/10 bg-slate-50/80 dark:bg-white/5 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500 dark:text-white/55;
+  }
+
+  .data-table {
+    @apply min-w-full text-left text-sm;
+  }
+
+  .data-table th {
+    @apply px-4 py-3 text-[11px] uppercase tracking-[0.18em] text-slate-400 dark:text-white/35 font-black border-b border-slate-200/80 dark:border-white/10;
+  }
+
+  .data-table td {
+    @apply px-4 py-3 border-b border-slate-200/70 dark:border-white/5 align-top;
+  }
+}
+
+@keyframes float {
+  0% {
+    transform: translateY(0px);
+  }
+
+  50% {
+    transform: translateY(-5px);
+  }
+
+  100% {
+    transform: translateY(0px);
+  }
+}
+
+.animate-float {
+  animation: float 4s ease-in-out infinite;
+}
+
+.transition-premium {
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
