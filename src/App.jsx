@@ -50,6 +50,7 @@ import StatCard from './components/StatCard.jsx';
 import TransactionEditorModal from './components/TransactionEditorModal.jsx';
 import UploadPanel from './components/UploadPanel.jsx';
 import { buildAnalytics } from './utils/analytics.js';
+import { reclassifyStoredTransaction } from './utils/classification.js';
 import { formatCurrency, formatDateLabel, formatInteger, formatSignedCurrency, monthLabelFromKey } from './utils/format.js';
 import {
   clearTransactionOverride,
@@ -78,6 +79,7 @@ const bucketText = {
   nonEssential: 'Non-essential',
   capital: 'Capital / Big-ticket',
   wealth: 'Investment',
+  wealthReturn: 'Wealth Returned',
   debt: 'Debt',
   transfer: 'Transfer',
   uncategorized: 'Uncategorized',
@@ -89,6 +91,7 @@ const bucketOptions = [
   { value: 'nonEssential', label: 'Non-essential' },
   { value: 'capital', label: 'Capital / Big-ticket' },
   { value: 'wealth', label: 'Investment' },
+  { value: 'wealthReturn', label: 'Wealth Returned' },
   { value: 'debt', label: 'Debt' },
   { value: 'transfer', label: 'Transfer' },
   { value: 'uncategorized', label: 'Uncategorized' },
@@ -367,7 +370,8 @@ function App() {
 
   const deferredSearch = useDeferredValue(searchText);
   const hasData = profile.transactions.length > 0;
-  const ruleAdjustedTransactions = applyRulesToTransactions(profile.transactions, profile.rules);
+  const refreshedTransactions = profile.transactions.map((transaction) => reclassifyStoredTransaction(transaction));
+  const ruleAdjustedTransactions = applyRulesToTransactions(refreshedTransactions, profile.rules);
   const effectiveTransactions = applyOverridesToTransactions(ruleAdjustedTransactions, profile.overrides);
   const years = [...new Set(effectiveTransactions.map((transaction) => transaction.year))].sort((left, right) => right - left);
   const scopedTransactions = effectiveTransactions.filter((transaction) => {
@@ -900,17 +904,17 @@ function App() {
 
         {hasData ? (
           <>
-            <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
               <StatCard
-                title="Total inflows"
-                value={formatCurrency(analytics.incomeTotal)}
-                helpText={`${formatCurrency(analytics.averageMonthlyIncome)} avg per active month`}
+                title="Gross cash in"
+                value={formatCurrency(analytics.cashInTotal)}
+                helpText={`${formatCurrency(analytics.averageMonthlyCashIn)} avg per active month`}
                 icon={ArrowDownLeft}
                 color="emerald"
                 delay={0}
               />
               <StatCard
-                title="Total outflows"
+                title="Gross cash out"
                 value={formatCurrency(analytics.outflowTotal)}
                 helpText={`${formatCurrency(analytics.averageMonthlyOutflow)} avg per active month`}
                 icon={ArrowUpRight}
@@ -918,20 +922,28 @@ function App() {
                 delay={1}
               />
               <StatCard
-                title="Net cash flow"
+                title="Net cash movement"
                 value={formatSignedCurrency(analytics.netCashFlow)}
-                helpText={`${analytics.savingsRate.toFixed(1)}% savings rate`}
+                helpText={`${analytics.savingsRate.toFixed(1)}% of gross cash in`}
                 icon={PiggyBank}
                 color="indigo"
                 delay={2}
               />
               <StatCard
-                title="Salary-like inflows"
-                value={formatCurrency(analytics.salaryLikeSources.reduce((total, item) => total + item.total, 0))}
-                helpText={`${formatInteger(analytics.salaryLikeSources.length)} recurring source${analytics.salaryLikeSources.length === 1 ? '' : 's'} detected`}
+                title="Counted income"
+                value={formatCurrency(analytics.incomeTotal)}
+                helpText={`${formatCurrency(analytics.averageMonthlyIncome)} after excluding wealth returned`}
                 icon={BriefcaseBusiness}
                 color="amber"
                 delay={3}
+              />
+              <StatCard
+                title="Wealth returned"
+                value={formatCurrency(analytics.wealthReturnTotal)}
+                helpText={`${formatCurrency(analytics.averageMonthlyWealthReturn)} avg per active month`}
+                icon={HandCoins}
+                color="emerald"
+                delay={4}
               />
             </section>
 
@@ -974,7 +986,7 @@ function App() {
                         <XAxis dataKey="label" tick={{ fill: '#94a3b8', fontSize: 12 }} tickLine={false} axisLine={false} />
                         <YAxis tickFormatter={(value) => `₹${Math.round(value / 1000)}k`} tick={{ fill: '#94a3b8', fontSize: 12 }} tickLine={false} axisLine={false} />
                         <Tooltip content={<ChartTooltip />} />
-                        <Bar dataKey="income" name="Inflows" fill="#22c55e" radius={[8, 8, 0, 0]} />
+                        <Bar dataKey="cashIn" name="Inflows" fill="#22c55e" radius={[8, 8, 0, 0]} />
                         <Bar dataKey="outflow" name="Outflows" fill="#f43f5e" radius={[8, 8, 0, 0]} />
                         <Line type="monotone" dataKey="net" name="Net" stroke="#6366f1" strokeWidth={3} dot={false} />
                       </ComposedChart>
@@ -1087,11 +1099,11 @@ function App() {
             <SectionCard
               id="income"
               title="Income"
-              subtitle="Track where credits come from, what looks recurring, and how much passive income the profile generated."
+              subtitle="Track what counts as earned income, what looks recurring, and what came back from fixed deposits or similar wealth redemptions."
             >
               <div className="grid gap-6 xl:grid-cols-[1.25fr_0.95fr]">
                 <div className="rounded-[1.7rem] border border-slate-200/80 bg-white/70 p-4 dark:border-white/10 dark:bg-white/[0.03]">
-                  <p className="mb-4 text-sm font-bold text-slate-700 dark:text-white">Top income sources</p>
+                  <p className="mb-4 text-sm font-bold text-slate-700 dark:text-white">Top counted income sources</p>
                   {analytics.incomeSources.length ? (
                     <div className="h-[320px]">
                       <ResponsiveContainer width="100%" height="100%">
@@ -1105,22 +1117,26 @@ function App() {
                       </ResponsiveContainer>
                     </div>
                   ) : (
-                    <EmptyState title="No credits yet" body="Credit analytics will show up once your statement imports include inflows." />
+                    <EmptyState title="No counted income yet" body="Income analytics will show up here once your statement imports include credits that are not wealth returns." />
                   )}
                 </div>
 
                 <div className="space-y-6">
                   <div className="rounded-[1.7rem] border border-slate-200/80 bg-white/70 p-5 dark:border-white/10 dark:bg-white/[0.03]">
-                    <div className="grid gap-4 md:grid-cols-2">
+                    <div className="grid gap-4 md:grid-cols-3">
                       <div>
                         <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400 dark:text-white/35">Passive income</p>
                         <p className="mt-2 text-2xl font-black text-slate-900 dark:text-white">{formatCurrency(analytics.passiveIncome)}</p>
                       </div>
                       <div>
-                        <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400 dark:text-white/35">Largest credit</p>
+                        <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400 dark:text-white/35">Largest counted income credit</p>
                         <p className="mt-2 text-2xl font-black text-slate-900 dark:text-white">
                           {analytics.biggestCredit ? formatCurrency(analytics.biggestCredit.amount) : formatCurrency(0)}
                         </p>
+                      </div>
+                      <div>
+                        <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400 dark:text-white/35">Wealth returned</p>
+                        <p className="mt-2 text-2xl font-black text-slate-900 dark:text-white">{formatCurrency(analytics.wealthReturnTotal)}</p>
                       </div>
                     </div>
                   </div>
@@ -1159,7 +1175,7 @@ function App() {
                             <XAxis dataKey="year" tick={{ fill: '#94a3b8', fontSize: 12 }} tickLine={false} axisLine={false} />
                             <YAxis tickFormatter={(value) => `₹${Math.round(value / 1000)}k`} tick={{ fill: '#94a3b8', fontSize: 12 }} tickLine={false} axisLine={false} />
                             <Tooltip content={<ChartTooltip />} />
-                            <Bar dataKey="income" name="Inflows" fill="#22c55e" radius={[8, 8, 0, 0]} />
+                            <Bar dataKey="cashIn" name="Inflows" fill="#22c55e" radius={[8, 8, 0, 0]} />
                             <Bar dataKey="outflow" name="Outflows" fill="#f43f5e" radius={[8, 8, 0, 0]} />
                           </BarChart>
                         </ResponsiveContainer>

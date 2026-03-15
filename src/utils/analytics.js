@@ -114,6 +114,7 @@ const buildInsights = ({
   moneyMoves,
   passiveIncome,
   salaryLikeSources,
+  wealthReturnTotal,
   outflowTotal,
 }) => {
   const insights = [];
@@ -164,6 +165,13 @@ const buildInsights = ({
     });
   }
 
+  if (wealthReturnTotal > 0) {
+    insights.push({
+      title: 'Capital returned',
+      body: `${wealthReturnTotal.toLocaleString('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 })} came back from fixed deposits or similar wealth redemptions, so it is kept out of earned income.`,
+    });
+  }
+
   if (merchantRanking[0]) {
     insights.push({
       title: 'Merchant concentration',
@@ -180,8 +188,8 @@ const buildInsights = ({
 
   if (biggestCredit) {
     insights.push({
-      title: 'Largest single credit',
-      body: `${biggestCredit.merchant} was the biggest single credit at ${biggestCredit.amount.toLocaleString('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 })}.`,
+      title: 'Largest counted income credit',
+      body: `${biggestCredit.merchant} was the biggest counted income credit at ${biggestCredit.amount.toLocaleString('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 })}.`,
     });
   }
 
@@ -196,20 +204,25 @@ export const buildAnalytics = (profile, scope) => {
   });
 
   const credits = transactions.filter((transaction) => transaction.direction === 'credit');
+  const incomeCredits = credits.filter((transaction) => transaction.bucketGroup !== 'wealthReturn');
+  const wealthReturnCredits = credits.filter((transaction) => transaction.bucketGroup === 'wealthReturn');
   const debits = transactions.filter((transaction) => transaction.direction === 'debit');
   const coreSpend = sumAmount(debits.filter((transaction) => transaction.bucketGroup === 'essential'));
   const lifestyleSpend = sumAmount(debits.filter((transaction) => transaction.bucketGroup === 'nonEssential'));
   const moneyMoves = sumAmount(debits.filter((transaction) => ['wealth', 'debt', 'transfer'].includes(transaction.bucketGroup)));
   const uncategorizedSpend = sumAmount(debits.filter((transaction) => transaction.bucketGroup === 'uncategorized'));
-  const incomeTotal = sumAmount(credits);
+  const cashInTotal = sumAmount(credits);
+  const incomeTotal = sumAmount(incomeCredits);
   const outflowTotal = sumAmount(debits);
-  const netCashFlow = incomeTotal - outflowTotal;
-  const passiveIncome = sumAmount(credits.filter((transaction) => ['Interest & Dividends', 'Dividends & Corporate Credits'].includes(transaction.category)));
+  const netCashFlow = cashInTotal - outflowTotal;
+  const passiveIncome = sumAmount(incomeCredits.filter((transaction) => ['Interest & Dividends', 'Dividends & Corporate Credits'].includes(transaction.category)));
+  const wealthReturnTotal = sumAmount(wealthReturnCredits);
 
   const monthly = new Map();
   transactions.forEach((transaction) => {
     const current = monthly.get(transaction.monthKey) || {
       monthKey: transaction.monthKey,
+      cashIn: 0,
       income: 0,
       outflow: 0,
       net: 0,
@@ -217,11 +230,17 @@ export const buildAnalytics = (profile, scope) => {
       nonEssential: 0,
       capital: 0,
       wealth: 0,
+      wealthReturn: 0,
       debt: 0,
       transfer: 0,
     };
     if (transaction.direction === 'credit') {
-      current.income += Number(transaction.amount || 0);
+      current.cashIn += Number(transaction.amount || 0);
+      if (transaction.bucketGroup === 'wealthReturn') {
+        current.wealthReturn += Number(transaction.amount || 0);
+      } else {
+        current.income += Number(transaction.amount || 0);
+      }
     } else {
       current.outflow += Number(transaction.amount || 0);
       if (transaction.bucketGroup === 'essential') current.essential += Number(transaction.amount || 0);
@@ -231,20 +250,25 @@ export const buildAnalytics = (profile, scope) => {
       if (transaction.bucketGroup === 'debt') current.debt += Number(transaction.amount || 0);
       if (transaction.bucketGroup === 'transfer') current.transfer += Number(transaction.amount || 0);
     }
-    current.net = current.income - current.outflow;
+    current.net = current.cashIn - current.outflow;
     monthly.set(transaction.monthKey, current);
   });
 
   const yearly = new Map();
   transactions.forEach((transaction) => {
     const year = Number(transaction.year);
-    const current = yearly.get(year) || { year, income: 0, outflow: 0, net: 0 };
+    const current = yearly.get(year) || { year, cashIn: 0, income: 0, wealthReturn: 0, outflow: 0, net: 0 };
     if (transaction.direction === 'credit') {
-      current.income += Number(transaction.amount || 0);
+      current.cashIn += Number(transaction.amount || 0);
+      if (transaction.bucketGroup === 'wealthReturn') {
+        current.wealthReturn += Number(transaction.amount || 0);
+      } else {
+        current.income += Number(transaction.amount || 0);
+      }
     } else {
       current.outflow += Number(transaction.amount || 0);
     }
-    current.net = current.income - current.outflow;
+    current.net = current.cashIn - current.outflow;
     yearly.set(year, current);
   });
 
@@ -268,13 +292,13 @@ export const buildAnalytics = (profile, scope) => {
     dayOfWeek[index].amount += Number(transaction.amount || 0);
   });
 
-  const salaryLikeSources = detectSalaryLikeSources(credits);
+  const salaryLikeSources = detectSalaryLikeSources(incomeCredits);
   const subscriptions = detectSubscriptions(debits);
   const categoryRanking = buildRankings(debits, 'category');
   const merchantRanking = buildRankings(debits, 'merchant');
-  const incomeSources = buildRankings(credits, 'merchant');
+  const incomeSources = buildRankings(incomeCredits, 'merchant');
   const biggestDebit = [...debits].sort((left, right) => right.amount - left.amount)[0] || null;
-  const biggestCredit = [...credits].sort((left, right) => right.amount - left.amount)[0] || null;
+  const biggestCredit = [...incomeCredits].sort((left, right) => right.amount - left.amount)[0] || null;
   const statementsInScope = (profile.statements || []).filter((statement) => (
     scope.statementId === 'all' || statement.id === scope.statementId
   ));
@@ -283,14 +307,19 @@ export const buildAnalytics = (profile, scope) => {
   const yearSeries = [...yearly.values()].sort((left, right) => left.year - right.year);
   const monthCount = new Set(transactions.map((transaction) => transaction.monthKey)).size || 1;
   const averageMonthlyOutflow = outflowTotal / monthCount;
+  const averageMonthlyCashIn = cashInTotal / monthCount;
   const averageMonthlyIncome = incomeTotal / monthCount;
-  const savingsRate = incomeTotal > 0 ? ((incomeTotal - outflowTotal) / incomeTotal) * 100 : 0;
+  const averageMonthlyWealthReturn = wealthReturnTotal / monthCount;
+  const savingsRate = cashInTotal > 0 ? ((cashInTotal - outflowTotal) / cashInTotal) * 100 : 0;
 
   return {
     transactions,
     credits,
+    incomeCredits,
+    wealthReturnCredits,
     debits,
     statementsInScope,
+    cashInTotal,
     incomeTotal,
     outflowTotal,
     netCashFlow,
@@ -299,8 +328,11 @@ export const buildAnalytics = (profile, scope) => {
     moneyMoves,
     uncategorizedSpend,
     passiveIncome,
+    wealthReturnTotal,
+    averageMonthlyCashIn,
     averageMonthlyOutflow,
     averageMonthlyIncome,
+    averageMonthlyWealthReturn,
     savingsRate,
     monthSeries,
     yearSeries,
@@ -324,6 +356,7 @@ export const buildAnalytics = (profile, scope) => {
       moneyMoves,
       passiveIncome,
       salaryLikeSources,
+      wealthReturnTotal,
       outflowTotal,
     }),
   };

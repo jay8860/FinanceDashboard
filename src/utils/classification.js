@@ -22,7 +22,9 @@ const aliasRules = [
   { pattern: /ITC LIMITED/i, label: 'ITC Limited' },
   { pattern: /UPI-LITE/i, label: 'UPI Lite' },
   { pattern: /MONTHLY INTEREST|QUARTERLY INTEREST|INTERESTPAID/i, label: 'Interest Credit' },
+  { pattern: /PRIN AND INT AUTO[_ ]?REDEEM|AUTO[_ ]?REDEEM/i, label: 'FD Auto Redeem' },
   { pattern: /FD PREMAT/i, label: 'FD Prematurity' },
+  { pattern: /FD THROUGH MOBILE|FIXED DEPOSIT|TERM DEPOSIT/i, label: 'Fixed Deposit' },
   { pattern: /JILA\s*PANCHAYAT|JILLA?\s*PANCHAYAT|ZILLA\s*PANCHAYAT|CEOJILA/i, label: 'Zilla Panchayat' },
   { pattern: /NEXTBILLION/i, label: 'NextBillion' },
   { pattern: /INDIAN CLEARING\s*CORP/i, label: 'Indian Clearing Corp' },
@@ -107,7 +109,16 @@ export const classifyTransaction = (transaction) => {
   const channel = detectChannel(text);
 
   if (transaction.direction === 'credit') {
-    if (/INTEREST|DIV|FINALDIV|FINDIV|FD PREMAT|INT DIV|SPLINTDIV|HDFCBANKSPLINTDIV/i.test(text)) {
+    if (/FD PREMAT|PRIN AND INT AUTO[_ ]?REDEEM|AUTO[_ ]?REDEEM|FD CLOSURE|PREMATURE CLOSURE|TERM DEPOSIT CLOSURE/i.test(text)) {
+      return {
+        merchant,
+        channel,
+        category: 'FD Closure / Redemption',
+        bucketGroup: 'wealthReturn',
+        incomeKind: 'capitalReturn',
+      };
+    }
+    if (/INTEREST|DIV|FINALDIV|FINDIV|INT DIV|SPLINTDIV|HDFCBANKSPLINTDIV/i.test(text)) {
       return {
         merchant,
         channel,
@@ -163,6 +174,9 @@ export const classifyTransaction = (transaction) => {
 
   if (/UPI-LITE|ADD MONEY|WALLET/i.test(text)) {
     return { merchant, channel, category: 'Wallet Top Up', bucketGroup: 'transfer', incomeKind: null };
+  }
+  if (/FD THROUGH MOBILE|FIXED DEPOSIT|TERM DEPOSIT|FD BOOK|FD OPEN|FD CREATE|FD RENEW|TDR/i.test(text)) {
+    return { merchant, channel, category: 'Fixed Deposit Funding', bucketGroup: 'wealth', incomeKind: null };
   }
   if (/GROWW|GROWWINVESTTECH|INDIAN CLEARING\s*CORP|STOCK|MUTUAL|SIP|BSE\.GROWWPAY|INVEST/i.test(text)) {
     return { merchant, channel, category: 'Investments', bucketGroup: 'wealth', incomeKind: null };
@@ -221,3 +235,14 @@ export const classifyTransaction = (transaction) => {
     incomeKind: null,
   };
 };
+
+export const reclassifyStoredTransaction = (transaction) => ({
+  ...transaction,
+  ...classifyTransaction({
+    ...transaction,
+    narration: transaction.narration,
+    direction: transaction.direction,
+    amount: transaction.amount,
+    refNo: transaction.refNo,
+  }),
+});

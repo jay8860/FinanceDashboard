@@ -1,7 +1,7 @@
 const STORAGE_KEY = 'statement-atlas-profile-v1';
 
 export const createEmptyProfile = () => ({
-  version: 3,
+  version: 4,
   statements: [],
   transactions: [],
   rules: [],
@@ -18,8 +18,7 @@ export const buildTransactionKey = (transaction) => ([
   Number(transaction.amount || 0).toFixed(2),
   Number(transaction.balance || 0).toFixed(2),
   transaction.refNo || '',
-  transaction.merchant || '',
-  transaction.category || '',
+  transaction.narration || '',
 ].join('|'));
 
 const normalizeTextField = (value) => {
@@ -94,7 +93,26 @@ const normalizeProfile = (profile) => {
     String(right.toDate || '').localeCompare(String(left.toDate || ''))
     || String(right.importedAt || '').localeCompare(String(left.importedAt || ''))
   ));
-  const transactions = [...(next.transactions || [])].sort((left, right) => (
+  const transactionKeyMap = new Map();
+  const normalizedTransactions = [];
+  const transactionIds = new Set();
+
+  [...(next.transactions || [])].forEach((transaction) => {
+    const nextKey = buildTransactionKey(transaction);
+    if (transaction.uniqueKey) transactionKeyMap.set(transaction.uniqueKey, nextKey);
+    transactionKeyMap.set(nextKey, nextKey);
+
+    const normalizedTransaction = {
+      ...transaction,
+      uniqueKey: nextKey,
+    };
+
+    if (transactionIds.has(nextKey)) return;
+    transactionIds.add(nextKey);
+    normalizedTransactions.push(normalizedTransaction);
+  });
+
+  const transactions = normalizedTransactions.sort((left, right) => (
     String(right.date).localeCompare(String(left.date))
     || String(right.valueDate || '').localeCompare(String(left.valueDate || ''))
     || Number(right.amount || 0) - Number(left.amount || 0)
@@ -112,16 +130,25 @@ const normalizeProfile = (profile) => {
   const overrides = Object.fromEntries(
     Object.entries(rawOverrides)
       .map(([uniqueKey, override]) => {
-        if (!transactionKeys.has(uniqueKey)) return null;
+        const resolvedKey = transactionKeyMap.get(uniqueKey) || uniqueKey;
+        if (!transactionKeys.has(resolvedKey)) return null;
         const normalized = normalizeOverride(override);
-        return normalized ? [uniqueKey, normalized] : null;
+        return normalized ? [resolvedKey, normalized] : null;
       })
       .filter(Boolean),
   );
-  const dismissedSuggestionKeys = [...new Set((next.dismissedSuggestionKeys || []).filter(Boolean))];
+  const dismissedSuggestionKeys = [...new Set((next.dismissedSuggestionKeys || [])
+    .map((suggestionKey) => {
+      const [leftKey, rightKey] = String(suggestionKey || '').split('__');
+      const resolvedLeft = transactionKeyMap.get(leftKey) || leftKey;
+      const resolvedRight = transactionKeyMap.get(rightKey) || rightKey;
+      if (!resolvedLeft || !resolvedRight) return null;
+      return `${resolvedLeft}__${resolvedRight}`;
+    })
+    .filter(Boolean))];
 
   return {
-    version: 3,
+    version: 4,
     statements,
     transactions,
     rules,
@@ -179,7 +206,7 @@ export const mergeProfiles = (existingProfile, incomingProfile, mode = 'merge') 
   });
 
   return normalizeProfile({
-    version: 3,
+    version: 4,
     statements,
     transactions,
     rules: existing.rules,
@@ -190,7 +217,7 @@ export const mergeProfiles = (existingProfile, incomingProfile, mode = 'merge') 
 };
 
 export const removeStatementFromProfile = (profile, statementId) => normalizeProfile({
-  version: 3,
+  version: 4,
   statements: (profile.statements || []).filter((statement) => statement.id !== statementId),
   transactions: (profile.transactions || []).filter((transaction) => transaction.statementId !== statementId),
   rules: profile.rules,
